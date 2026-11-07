@@ -1,0 +1,203 @@
+{
+  "websites": [
+    {
+      "id": "site_sandbox",
+      "url": "https://demo.sitepulse.internal",
+      "name": "Enterprise Sandbox Portal",
+      "authType": "OAUTH2_PKCE",
+      "isActive": true,
+      "lastConnected": 1793992549852,
+      "apiHealth": "UP",
+      "manifestVersion": "v2.4.0"
+    }
+  ],
+  "auditLogs": [
+    {
+      "id": "audit_init",
+      "timestamp": 1793988949852,
+      "category": "DISCOVERY_SESSION",
+      "title": "Initial Phase 3 Engine Ingestion",
+      "details": "Self-discovery engine initialized with 11-stage pipeline and OpenAPI 3.0 analyzer.",
+      "performedBy": "System Auto-Daemon",
+      "websiteId": "site_sandbox",
+      "status": "SUCCESS"
+    }
+  ],
+  "diagnosticLogs": [
+    {
+      "id": "diag_1",
+      "timestamp": 1793992489852,
+      "endpointPath": "/api/v1/integration/health",
+      "method": "GET",
+      "statusCode": 200,
+      "latencyMs": 38,
+      "isSuccessful": true,
+      "message": "HTTP 200 OK — Gateway healthy"
+    }
+  ],
+  "users": [
+    {
+      "id": "usr_owner_1",
+      "name": "Alex Vance",
+      "email": "alex.vance@sitepulse.internal",
+      "role": "OWNER",
+      "status": "ACTIVE",
+      "lastLogin": "10 minutes ago",
+      "permissions": [
+        "owner:read",
+        "owner:admin",
+        "manager:ops",
+        "manager:write"
+      ]
+    },
+    {
+      "id": "usr_mgr_1",
+      "name": "Sarah Connor",
+      "email": "sarah.c@sitepulse.internal",
+      "role": "MANAGER",
+      "status": "ACTIVE",
+      "lastLogin": "1 hour ago",
+      "permissions": [
+        "manager:ops",
+        "manager:write"
+      ]
+    },
+    {
+      "id": "usr_mgr_2",
+      "name": "David Kim",
+      "email": "david.kim@sitepulse.internal",
+      "role": "MANAGER",
+      "status": "SUSPENDED",
+      "lastLogin": "2 days ago",
+      "permissions": [
+        "manager:ops"
+      ]
+    }
+  ],
+  "orders": [
+    {
+      "id": "ORD-98241",
+      "customer": "Acme Logistics Corp",
+      "itemsCount": 4,
+      "totalAmount": 1420.5,
+      "status": "NEW",
+      "placedAt": "2026-11-07T12:04:32.580Z",
+      "trackingNumber": null,
+      "shippingAddress": "100 Enterprise Way, Suite 400, San Francisco CA"
+    },
+    {
+      "id": "ORD-98240",
+      "customer": "Global Tech Dynamics",
+      "itemsCount": 12,
+      "totalAmount": 5890,
+      "status": "PROCESSING",
+      "placedAt": "2026-11-07T10:19:32.581Z",
+      "trackingNumber": null,
+      "shippingAddress": "450 Innovation Blvd, Austin TX"
+    },
+    {
+      "id": "ORD-98239",
+      "customer": "Nexus Cybernetics",
+      "itemsCount": 2,
+      "totalAmount": 340,
+      "status": "SHIPPED",
+      "placedAt": "2026-11-07T04:19:32.581Z",
+      "trackingNumber": "TRK-USPS-8849201",
+      "shippingAddress": "88 Cyber Way, Seattle WA"
+    },
+    {
+      "id": "ORD-98238",
+      "customer": "Apex Cloud Solutions",
+      "itemsCount": 1,
+      "totalAmount": 1250,
+      "status": "SHIPPED",
+      "placedAt": "2026-11-06T12:19:32.581Z",
+      "trackingNumber": "TRK-FEDEX-9920145",
+      "shippingAddress": "12 Peak Rd, Denver CO"
+    }
+  ],
+  "catalog": [
+    {
+      "id": "SKU-1001",
+      "name": "SitePulse Edge Gateway Node",
+      "category": "Hardware",
+      "price": 899,
+      "stock": 45,
+      "minThreshold": 10,
+      "sku": "HW-GW-01",
+      "status": "IN_STOCK"
+    },
+    {
+      "id": "SKU-1002",
+      "name": "Enterprise Telemetry Module",
+      "category": "Software License",
+      "price": 249,
+      "stock": 120,
+      "minThreshold": 20,
+      "sku": "SW-MOD-TEL",
+      "status": "IN_STOCK"
+    },
+    {
+      "id": "SKU-1003",
+      "name": "High-Density Transceiver Array",
+      "category": "Hardware",
+      "price": 1450,
+      "stock": 4,
+      "minThreshold": 8,
+      "sku": "HW-ARRAY-8X",
+      "status": "LOW_STOCK"
+    },
+    {
+      "id": "SKU-1004",
+      "name": "Automated Webhook Relay Appliance",
+      "category": "Appliance",
+      "price": 3200,
+      "stock": 0,
+      "minThreshold": 2,
+      "sku": "HW-RELAY-PRO",
+      "status": "OUT_OF_STOCK"
+    }
+  ],
+  "webhooks": [
+    {
+      "id": "wh_1",
+      "url": "https://api.acmeretail.com/webhooks/sitepulse",
+      "secret": "whsec_9948201582194812",
+      "events": [
+        "order.created",
+        "order.fulfilled"
+      ],
+      "status": "ACTIVE",
+      "lastTriggered": "12 mins ago"
+    },
+    {
+      "id": "wh_2",
+      "url": "https://erp.sitepulse.internal/sync",
+      "secret": "whsec_7719204128491023",
+      "events": [
+        "catalog.stock_low",
+        "user.revoked"
+      ],
+      "status": "ACTIVE",
+      "lastTriggered": "1 hour ago"
+    }
+  ],
+  "backups": [
+    {
+      "backupId": "bkp_1794054800893",
+      "timestamp": 1794054800893,
+      "label": "Verification Test Snapshot",
+      "schemaVersion": "5.0.0",
+      "featuresCount": 15,
+      "configsCount": 1
+    },
+    {
+      "backupId": "backup_initial_v4",
+      "timestamp": 1794047585988,
+      "label": "Pre-Hardening Baseline Snapshot",
+      "schemaVersion": "4.0.0",
+      "featuresCount": 15,
+      "configsCount": 1
+    }
+  ]
+}

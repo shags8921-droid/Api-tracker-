@@ -1,0 +1,6 @@
+{
+  "name": "SitePulse AI",
+  "description": "Independent AI website analyser and management app with automated discovery, OpenAPI inspection, hub mapping, and hybrid integration engine.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
