@@ -24,11 +24,16 @@ import {
   Lock,
   Rocket,
   Building2,
-  Server
+  Server,
+  Globe,
+  CreditCard,
+  Headphones,
+  Scale
 } from 'lucide-react';
 import { WebsiteConfig, DiscoveredFeature } from '../types';
 
 export type ScreenId =
+  | 'landing'
   | 'welcome'
   | 'connect'
   | 'auth'
@@ -47,6 +52,9 @@ export type ScreenId =
   | 'quality'
   | 'launch'
   | 'audit'
+  | 'pricing'
+  | 'support'
+  | 'legal'
   | 'settings'
   | 'diagnostics';
 
@@ -135,10 +143,20 @@ export const Navigation: React.FC<Props> = ({
         { id: 'settings', label: '19. Settings', icon: Settings },
         { id: 'diagnostics', label: '20. Diagnostics', icon: Terminal }
       ]
+    },
+    {
+      title: 'COMMERCIAL & TRUST',
+      items: [
+        { id: 'landing', label: '0. Public Landing Page', icon: Globe },
+        { id: 'pricing', label: '21. Pricing & Nepal Pay', icon: CreditCard },
+        { id: 'support', label: '22. Customer Support Desk', icon: Headphones },
+        { id: 'legal', label: '23. Legal & Trust Center', icon: Scale }
+      ]
     }
   ];
 
   const screenLabels: Record<ScreenId, string> = {
+    landing: 'Public Landing Page',
     welcome: 'Welcome',
     connect: 'Connect Website',
     auth: 'Authentication',
@@ -157,6 +175,9 @@ export const Navigation: React.FC<Props> = ({
     quality: 'QA & Quality Suite',
     launch: 'Launch Readiness',
     audit: 'Audit History',
+    pricing: 'Pricing & Billing',
+    support: 'Customer Support Desk',
+    legal: 'Legal & Trust Center',
     settings: 'Settings',
     diagnostics: 'Diagnostics'
   };

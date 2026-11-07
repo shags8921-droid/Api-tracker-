@@ -20,6 +20,10 @@ import { LaunchReadinessScreen } from './screens/LaunchReadinessScreen';
 import { AuditHistoryScreen } from './screens/AuditHistoryScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { DiagnosticsScreen } from './screens/DiagnosticsScreen';
+import { PublicLandingPageScreen } from './screens/PublicLandingPageScreen';
+import { CustomerSupportCenterScreen } from './screens/CustomerSupportCenterScreen';
+import { LegalAndTrustScreen } from './screens/LegalAndTrustScreen';
+import { PricingAndBillingScreen } from './screens/PricingAndBillingScreen';
 
 import { FeatureInspectorModal } from './components/FeatureInspectorModal';
 import { DestructiveConfirmModal } from './components/DestructiveConfirmModal';
@@ -551,6 +555,38 @@ export const App: React.FC = () => {
 
           {currentScreen === 'diagnostics' && (
             <DiagnosticsScreen activeConfig={activeConfig} />
+          )}
+
+          {currentScreen === 'landing' && (
+            <PublicLandingPageScreen
+              onGetStarted={() => setCurrentScreen('connect')}
+              onExplorePlans={() => setCurrentScreen('pricing')}
+              onOpenDemo={() => setCurrentScreen('owner')}
+              onNavigate={setCurrentScreen}
+            />
+          )}
+
+          {currentScreen === 'pricing' && (
+            <PricingAndBillingScreen
+              currentOrgId={activeOrgId}
+              currentOrgName={activeConfig?.name || 'Primary Workspace'}
+              currentTier="PROFESSIONAL"
+              onUpgradeSuccess={(newTier) => {
+                showToast(`Upgraded workspace to ${newTier}!`);
+              }}
+            />
+          )}
+
+          {currentScreen === 'support' && (
+            <CustomerSupportCenterScreen
+              currentOrgId={activeOrgId}
+              currentOrgName={activeConfig?.name || 'Primary Workspace'}
+              currentUserEmail={userRole === 'OWNER' ? 'owner@sitepulse.ai' : 'manager@sitepulse.ai'}
+            />
+          )}
+
+          {currentScreen === 'legal' && (
+            <LegalAndTrustScreen />
           )}
         </div>
       </main>

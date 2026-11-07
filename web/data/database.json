@@ -199,5 +199,91 @@
       "featuresCount": 15,
       "configsCount": 1
     }
+  ],
+  "organisations": [
+    {
+      "id": "org_acme_corp",
+      "name": "Acme Enterprise Global",
+      "slug": "acme-corp",
+      "category": "LOGISTICS",
+      "createdAt": 1791485490818,
+      "ownerId": "usr_owner_1",
+      "subscription": {
+        "tier": "PROFESSIONAL",
+        "status": "ACTIVE",
+        "expiresAt": 1796669500225,
+        "billingCycle": "MONTHLY",
+        "paymentMethodConfigured": true,
+        "limits": {
+          "maxWebsites": 5,
+          "maxUsers": 15,
+          "monthlyAiRequests": 5000,
+          "storageMb": 1024,
+          "webhooksEnabled": true,
+          "advancedReports": true,
+          "dedicatedSupport": true
+        }
+      },
+      "usage": {
+        "aiRequestsThisMonth": 142,
+        "totalApiRequests": 8940,
+        "storageUsedMb": 42
+      },
+      "settings": {
+        "defaultTimezone": "UTC",
+        "currency": "USD",
+        "enableMultiWebsiteAggregation": true
+      }
+    },
+    {
+      "id": "org_nexus_retail",
+      "name": "Nexus Retail Stores Ltd",
+      "slug": "nexus-retail",
+      "category": "RETAIL",
+      "createdAt": 1793213490818,
+      "ownerId": "usr_owner_nexus",
+      "subscription": {
+        "tier": "STARTER",
+        "status": "ACTIVE",
+        "expiresAt": 1795805490818,
+        "billingCycle": "MONTHLY",
+        "paymentMethodConfigured": true,
+        "limits": {
+          "maxWebsites": 2,
+          "maxUsers": 5,
+          "monthlyAiRequests": 1000,
+          "storageMb": 256,
+          "advancedReports": false,
+          "webhooksEnabled": true,
+          "prioritySupport": false
+        }
+      },
+      "usage": {
+        "aiRequestsThisMonth": 28,
+        "totalApiRequests": 1240,
+        "storageUsedMb": 12
+      },
+      "settings": {
+        "defaultTimezone": "America/New_York",
+        "currency": "USD",
+        "enableMultiWebsiteAggregation": false
+      }
+    }
+  ],
+  "transactions": [
+    {
+      "transactionId": "tx_esewa_1794077497153",
+      "orgId": "org_acme_corp",
+      "planId": "plan_pro",
+      "planTier": "PROFESSIONAL",
+      "amount": 19800,
+      "currency": "NPR",
+      "gateway": "ESEWA",
+      "status": "VERIFIED",
+      "invoiceNumber": "INV-497153",
+      "createdAt": 1794077497153,
+      "gatewayRefId": "ESEWA-VERIFY-998811",
+      "verifiedAt": 1794077500225
+    }
   ]
 }

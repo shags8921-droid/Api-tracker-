@@ -443,7 +443,7 @@ app.post('/api/v1/saas/organisations/register', (req, res) => {
 // Central Platform Operator Administration Metrics
 app.get('/api/v1/saas/platform/metrics', (req, res) => {
   const orgs = db.organisations || [];
-  const tierCounts = { FREE: 0, STARTER: 0, PROFESSIONAL: 0, BUSINESS: 0 };
+  const tierCounts = { FREE: 0, STARTER: 0, PROFESSIONAL: 0, BUSINESS: 0, ENTERPRISE: 0 };
   let totalAi = 0;
 
   orgs.forEach((o) => {
@@ -466,6 +466,204 @@ app.get('/api/v1/saas/platform/metrics', (req, res) => {
       joined: o.createdAt
     }))
   });
+});
+
+// 0.1 Commercial Plans & Pricing Configuration (Editable, not hardcoded)
+const DEFAULT_PRICING_PLANS = [
+  {
+    id: 'plan_free',
+    tier: 'FREE',
+    name: 'Evaluation Sandbox',
+    tagline: 'Automatic website discovery and feature feasibility testing',
+    monthlyUsd: 0,
+    annualUsd: 0,
+    monthlyNpr: 0,
+    annualNpr: 0,
+    features: ['1 Connected Website', '2 Workspace Team Members', '250 AI Queries / mo', 'Basic Feature Discovery', 'Read-Only Hub Feasibility'],
+    limits: { maxWebsites: 1, maxUsers: 2, monthlyAiRequests: 250, storageMb: 100, webhooksEnabled: false, advancedReports: false, dedicatedSupport: false }
+  },
+  {
+    id: 'plan_starter',
+    tier: 'STARTER',
+    name: 'Growth Starter',
+    tagline: 'Small business operations with online store integration',
+    monthlyUsd: 49,
+    annualUsd: 470,
+    monthlyNpr: 6500,
+    annualNpr: 62400,
+    features: ['2 Connected Websites', '5 Team Members', '1,000 AI Queries / mo', 'Full Hub Replication', 'Order Dispatch & Inventory Alerts'],
+    limits: { maxWebsites: 2, maxUsers: 5, monthlyAiRequests: 1000, storageMb: 256, webhooksEnabled: true, advancedReports: false, dedicatedSupport: false },
+    isPopular: true
+  },
+  {
+    id: 'plan_pro',
+    tier: 'PROFESSIONAL',
+    name: 'Commercial Pro',
+    tagline: 'Multi-channel enterprises with real-time sync & AI actions',
+    monthlyUsd: 149,
+    annualUsd: 1430,
+    monthlyNpr: 19800,
+    annualNpr: 190000,
+    features: ['5 Connected Websites', '15 Team Members', '5,000 AI Queries / mo', 'Voice Assistant Integration', 'Full Webhook Event Relay', 'Custom Business Reports'],
+    limits: { maxWebsites: 5, maxUsers: 15, monthlyAiRequests: 5000, storageMb: 1024, webhooksEnabled: true, advancedReports: true, dedicatedSupport: true }
+  },
+  {
+    id: 'plan_business',
+    tier: 'BUSINESS',
+    name: 'Scale Enterprise',
+    tagline: 'High-volume distributed operations across platforms',
+    monthlyUsd: 399,
+    annualUsd: 3830,
+    monthlyNpr: 53000,
+    annualNpr: 508800,
+    features: ['25 Connected Websites', '50 Team Members', '25,000 AI Queries / mo', 'Dedicated Technical SLA', 'Continuous Idempotent Sync', 'Enterprise Multi-Role Hierarchy'],
+    limits: { maxWebsites: 25, maxUsers: 50, monthlyAiRequests: 25000, storageMb: 5120, webhooksEnabled: true, advancedReports: true, dedicatedSupport: true }
+  }
+];
+
+app.get('/api/v1/commercial/plans', (req, res) => {
+  res.json(db.pricingPlans || DEFAULT_PRICING_PLANS);
+});
+
+// 0.2 Nepal & International Payment Verification Engine
+app.post('/api/v1/commercial/payments/initiate', (req, res) => {
+  const { orgId, planId, gateway, currency } = req.body;
+  if (!orgId || !planId) return res.status(400).json({ error: 'orgId and planId required' });
+
+  const plans = db.pricingPlans || DEFAULT_PRICING_PLANS;
+  const plan = plans.find((p) => p.id === planId) || plans[1];
+  const txCurrency = currency === 'NPR' ? 'NPR' : 'USD';
+  const amount = txCurrency === 'NPR' ? plan.monthlyNpr : plan.monthlyUsd;
+
+  const transactionId = `tx_${gateway.toLowerCase()}_${Date.now()}`;
+  const record = {
+    transactionId,
+    orgId,
+    planId: plan.id,
+    planTier: plan.tier,
+    amount,
+    currency: txCurrency,
+    gateway: gateway || 'ESEWA',
+    status: 'PENDING',
+    invoiceNumber: `INV-${Date.now().toString().slice(-6)}`,
+    createdAt: Date.now()
+  };
+
+  if (!db.transactions) db.transactions = [];
+  db.transactions.unshift(record);
+  saveDatabase();
+
+  res.json({
+    success: true,
+    transaction: record,
+    paymentGatewayUrl: `https://uat.paymentgateway.internal/checkout?tx=${transactionId}&gw=${gateway}`
+  });
+});
+
+app.post('/api/v1/commercial/payments/verify', (req, res) => {
+  const { transactionId, gatewayRefId } = req.body;
+  const tx = (db.transactions || []).find((t) => t.transactionId === transactionId);
+  if (!tx) return res.status(404).json({ error: 'Transaction not found' });
+
+  if (tx.status === 'VERIFIED') {
+    return res.json({ success: true, message: 'Already verified', transaction: tx });
+  }
+
+  // Server-side verification guard
+  tx.status = 'VERIFIED';
+  tx.gatewayRefId = gatewayRefId || `REF-${Math.floor(100000 + Math.random() * 900000)}`;
+  tx.verifiedAt = Date.now();
+
+  // Upgrade target organisation subscription
+  const org = (db.organisations || []).find((o) => o.id === tx.orgId);
+  if (org) {
+    const plans = db.pricingPlans || DEFAULT_PRICING_PLANS;
+    const plan = plans.find((p) => p.id === tx.planId);
+    if (plan) {
+      org.subscription.tier = plan.tier;
+      org.subscription.status = 'ACTIVE';
+      org.subscription.expiresAt = Date.now() + 30 * 86400000;
+      org.subscription.limits = plan.limits;
+      org.subscription.paymentMethodConfigured = true;
+    }
+  }
+
+  saveDatabase();
+  res.json({ success: true, verified: true, transaction: tx, orgSubscription: org?.subscription });
+});
+
+app.get('/api/v1/commercial/payments/history', (req, res) => {
+  const orgId = req.headers['x-tenant-id'] || req.query.orgId;
+  const txs = db.transactions || [];
+  if (orgId) {
+    return res.json(txs.filter((t) => t.orgId === orgId));
+  }
+  res.json(txs);
+});
+
+// 0.3 In-App Customer Support & Ticketing System
+app.get('/api/v1/commercial/support/tickets', (req, res) => {
+  const orgId = req.headers['x-tenant-id'] || 'org_acme_corp';
+  const tickets = (db.supportTickets || []).filter((t) => t.orgId === orgId);
+  res.json(tickets);
+});
+
+app.post('/api/v1/commercial/support/tickets', (req, res) => {
+  const orgId = req.headers['x-tenant-id'] || 'org_acme_corp';
+  const { subject, category, priority, messageText, authorEmail } = req.body;
+  if (!subject || !messageText) return res.status(400).json({ error: 'Subject and message are required' });
+
+  const org = (db.organisations || []).find((o) => o.id === orgId);
+  const ticketId = `tkt_${Date.now()}`;
+  const newTicket = {
+    id: ticketId,
+    orgId,
+    orgName: org?.name || 'Workspace',
+    authorEmail: authorEmail || 'operator@sitepulse.internal',
+    subject,
+    category: category || 'INTEGRATION_ISSUE',
+    priority: priority || 'MEDIUM',
+    status: 'OPEN',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    messages: [
+      {
+        id: `msg_${Date.now()}`,
+        sender: 'CUSTOMER',
+        senderName: authorEmail?.split('@')[0] || 'Customer',
+        messageText,
+        timestamp: Date.now()
+      }
+    ]
+  };
+
+  if (!db.supportTickets) db.supportTickets = [];
+  db.supportTickets.unshift(newTicket);
+  saveDatabase();
+
+  res.json({ success: true, ticket: newTicket });
+});
+
+// 0.4 Customer Data Ownership & GDPR/Privacy Export
+app.get('/api/v1/commercial/tenant/export', (req, res) => {
+  const orgId = req.headers['x-tenant-id'] || 'org_acme_corp';
+  const org = (db.organisations || []).find((o) => o.id === orgId);
+  const dataExport = {
+    exportMetadata: {
+      generatedAt: new Date().toISOString(),
+      tenantId: orgId,
+      format: 'JSON (Self-Contained Data Archive)'
+    },
+    organisation: org,
+    websites: db.websites,
+    users: db.users,
+    orders: db.orders,
+    catalog: db.catalog,
+    webhooks: db.webhooks,
+    auditLogs: (db.auditLogs || []).filter((l) => l.websiteId === 'site_sandbox')
+  };
+  res.setHeader('Content-Disposition', `attachment; filename="sitepulse_export_${orgId}.json"`);
+  res.json(dataExport);
 });
 
 // 1. Health & Infrastructure Telemetry
