@@ -131,6 +131,21 @@ class ApiService {
       throw { message: e.message || 'Network request failed', latencyMs, status: 500 };
     }
   }
+
+  async getNotifications(): Promise<{ notifications: any[]; unreadCount: number }> {
+    const res = await this.get<{ notifications: any[]; unreadCount: number }>('/api/v1/notifications');
+    return res.data;
+  }
+
+  async markNotificationRead(id: string): Promise<any> {
+    const res = await this.post<any>(`/api/v1/notifications/${id}/read`, {});
+    return res.data;
+  }
+
+  async uploadFile(fileName: string, fileType: string, dataUrl: string): Promise<any> {
+    const res = await this.post<any>('/api/v1/uploads', { fileName, fileType, dataUrl });
+    return res.data;
+  }
 }
 
 export const api = new ApiService();

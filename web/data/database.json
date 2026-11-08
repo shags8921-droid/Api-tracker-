@@ -8,7 +8,8 @@
       "isActive": true,
       "lastConnected": 1793992549852,
       "apiHealth": "UP",
-      "manifestVersion": "v2.4.0"
+      "manifestVersion": "v2.4.0",
+      "orgId": "org_acme_corp"
     }
   ],
   "auditLogs": [
@@ -20,6 +21,17 @@
       "details": "Self-discovery engine initialized with 11-stage pipeline and OpenAPI 3.0 analyzer.",
       "performedBy": "System Auto-Daemon",
       "websiteId": "site_sandbox",
+      "status": "SUCCESS",
+      "orgId": "org_acme_corp"
+    },
+    {
+      "id": "audit_pay_1794133435554",
+      "orgId": "org_nexus_retail",
+      "timestamp": 1794133435554,
+      "category": "BILLING",
+      "title": "Payment Verified: Invoice INV-428334 via ESEWA",
+      "details": "Subscription upgraded to BUSINESS tier. Reference token: REF-ESEWA-8849201",
+      "performedBy": "Payment Gateway Webhook Engine",
       "status": "SUCCESS"
     }
   ],
@@ -48,7 +60,8 @@
         "owner:admin",
         "manager:ops",
         "manager:write"
-      ]
+      ],
+      "orgId": "org_acme_corp"
     },
     {
       "id": "usr_mgr_1",
@@ -60,7 +73,8 @@
       "permissions": [
         "manager:ops",
         "manager:write"
-      ]
+      ],
+      "orgId": "org_acme_corp"
     },
     {
       "id": "usr_mgr_2",
@@ -71,7 +85,8 @@
       "lastLogin": "2 days ago",
       "permissions": [
         "manager:ops"
-      ]
+      ],
+      "orgId": "org_acme_corp"
     }
   ],
   "orders": [
@@ -83,7 +98,8 @@
       "status": "NEW",
       "placedAt": "2026-11-07T12:04:32.580Z",
       "trackingNumber": null,
-      "shippingAddress": "100 Enterprise Way, Suite 400, San Francisco CA"
+      "shippingAddress": "100 Enterprise Way, Suite 400, San Francisco CA",
+      "orgId": "org_acme_corp"
     },
     {
       "id": "ORD-98240",
@@ -93,7 +109,8 @@
       "status": "PROCESSING",
       "placedAt": "2026-11-07T10:19:32.581Z",
       "trackingNumber": null,
-      "shippingAddress": "450 Innovation Blvd, Austin TX"
+      "shippingAddress": "450 Innovation Blvd, Austin TX",
+      "orgId": "org_acme_corp"
     },
     {
       "id": "ORD-98239",
@@ -103,7 +120,8 @@
       "status": "SHIPPED",
       "placedAt": "2026-11-07T04:19:32.581Z",
       "trackingNumber": "TRK-USPS-8849201",
-      "shippingAddress": "88 Cyber Way, Seattle WA"
+      "shippingAddress": "88 Cyber Way, Seattle WA",
+      "orgId": "org_acme_corp"
     },
     {
       "id": "ORD-98238",
@@ -113,7 +131,8 @@
       "status": "SHIPPED",
       "placedAt": "2026-11-06T12:19:32.581Z",
       "trackingNumber": "TRK-FEDEX-9920145",
-      "shippingAddress": "12 Peak Rd, Denver CO"
+      "shippingAddress": "12 Peak Rd, Denver CO",
+      "orgId": "org_acme_corp"
     }
   ],
   "catalog": [
@@ -125,7 +144,8 @@
       "stock": 45,
       "minThreshold": 10,
       "sku": "HW-GW-01",
-      "status": "IN_STOCK"
+      "status": "IN_STOCK",
+      "orgId": "org_acme_corp"
     },
     {
       "id": "SKU-1002",
@@ -135,7 +155,8 @@
       "stock": 120,
       "minThreshold": 20,
       "sku": "SW-MOD-TEL",
-      "status": "IN_STOCK"
+      "status": "IN_STOCK",
+      "orgId": "org_acme_corp"
     },
     {
       "id": "SKU-1003",
@@ -145,7 +166,8 @@
       "stock": 4,
       "minThreshold": 8,
       "sku": "HW-ARRAY-8X",
-      "status": "LOW_STOCK"
+      "status": "LOW_STOCK",
+      "orgId": "org_acme_corp"
     },
     {
       "id": "SKU-1004",
@@ -155,7 +177,8 @@
       "stock": 0,
       "minThreshold": 2,
       "sku": "HW-RELAY-PRO",
-      "status": "OUT_OF_STOCK"
+      "status": "OUT_OF_STOCK",
+      "orgId": "org_acme_corp"
     }
   ],
   "webhooks": [
@@ -168,7 +191,8 @@
         "order.fulfilled"
       ],
       "status": "ACTIVE",
-      "lastTriggered": "12 mins ago"
+      "lastTriggered": "12 mins ago",
+      "orgId": "org_acme_corp"
     },
     {
       "id": "wh_2",
@@ -179,7 +203,8 @@
         "user.revoked"
       ],
       "status": "ACTIVE",
-      "lastTriggered": "1 hour ago"
+      "lastTriggered": "1 hour ago",
+      "orgId": "org_acme_corp"
     }
   ],
   "backups": [
@@ -189,7 +214,8 @@
       "label": "Verification Test Snapshot",
       "schemaVersion": "5.0.0",
       "featuresCount": 15,
-      "configsCount": 1
+      "configsCount": 1,
+      "orgId": "org_acme_corp"
     },
     {
       "backupId": "backup_initial_v4",
@@ -197,7 +223,8 @@
       "label": "Pre-Hardening Baseline Snapshot",
       "schemaVersion": "4.0.0",
       "featuresCount": 15,
-      "configsCount": 1
+      "configsCount": 1,
+      "orgId": "org_acme_corp"
     }
   ],
   "organisations": [
@@ -209,16 +236,16 @@
       "createdAt": 1791485490818,
       "ownerId": "usr_owner_1",
       "subscription": {
-        "tier": "PROFESSIONAL",
+        "tier": "BUSINESS",
         "status": "ACTIVE",
-        "expiresAt": 1796669500225,
+        "expiresAt": 1796724618823,
         "billingCycle": "MONTHLY",
         "paymentMethodConfigured": true,
         "limits": {
-          "maxWebsites": 5,
-          "maxUsers": 15,
-          "monthlyAiRequests": 5000,
-          "storageMb": 1024,
+          "maxWebsites": 25,
+          "maxUsers": 50,
+          "monthlyAiRequests": 25000,
+          "storageMb": 5120,
           "webhooksEnabled": true,
           "advancedReports": true,
           "dedicatedSupport": true
@@ -243,19 +270,19 @@
       "createdAt": 1793213490818,
       "ownerId": "usr_owner_nexus",
       "subscription": {
-        "tier": "STARTER",
+        "tier": "BUSINESS",
         "status": "ACTIVE",
-        "expiresAt": 1795805490818,
+        "expiresAt": 1796725435554,
         "billingCycle": "MONTHLY",
         "paymentMethodConfigured": true,
         "limits": {
-          "maxWebsites": 2,
-          "maxUsers": 5,
-          "monthlyAiRequests": 1000,
-          "storageMb": 256,
-          "advancedReports": false,
+          "maxWebsites": 25,
+          "maxUsers": 50,
+          "monthlyAiRequests": 25000,
+          "storageMb": 5120,
           "webhooksEnabled": true,
-          "prioritySupport": false
+          "advancedReports": true,
+          "dedicatedSupport": true
         }
       },
       "usage": {
@@ -272,6 +299,34 @@
   ],
   "transactions": [
     {
+      "transactionId": "tx_esewa_1794133428334",
+      "orgId": "org_nexus_retail",
+      "planId": "plan_business",
+      "planTier": "BUSINESS",
+      "amount": 53000,
+      "currency": "NPR",
+      "gateway": "ESEWA",
+      "status": "VERIFIED",
+      "invoiceNumber": "INV-428334",
+      "createdAt": 1794133428334,
+      "gatewayRefId": "REF-ESEWA-8849201",
+      "verifiedAt": 1794133435554
+    },
+    {
+      "transactionId": "tx_esewa_1794132615225",
+      "orgId": "org_acme_corp",
+      "planId": "plan_business",
+      "planTier": "BUSINESS",
+      "amount": 53000,
+      "currency": "NPR",
+      "gateway": "ESEWA",
+      "status": "VERIFIED",
+      "invoiceNumber": "INV-615225",
+      "createdAt": 1794132615225,
+      "gatewayRefId": "fake_token_123",
+      "verifiedAt": 1794132618823
+    },
+    {
       "transactionId": "tx_esewa_1794077497153",
       "orgId": "org_acme_corp",
       "planId": "plan_pro",
@@ -285,5 +340,33 @@
       "gatewayRefId": "ESEWA-VERIFY-998811",
       "verifiedAt": 1794077500225
     }
-  ]
+  ],
+  "supportTickets": [],
+  "notifications": [
+    {
+      "id": "notif_1794151327304_u18u",
+      "orgId": "org_acme_corp",
+      "type": "FILE_UPLOADED",
+      "title": "Media Asset Stored",
+      "message": "File \"audit_test_file.txt\" (0.0 KB) uploaded successfully.",
+      "severity": "INFO",
+      "read": false,
+      "timestamp": 1794151327304,
+      "metadata": {}
+    },
+    {
+      "id": "notif_welcome",
+      "orgId": "org_acme_corp",
+      "type": "SYSTEM_READY",
+      "title": "SitePulse AI Engine Activated",
+      "message": "Multi-tenant isolation and security hardening verified for Acme Enterprise Global.",
+      "severity": "SUCCESS",
+      "read": false,
+      "timestamp": 1794147718744,
+      "metadata": {
+        "version": "5.1.0"
+      }
+    }
+  ],
+  "emailOutbox": []
 }

@@ -44,6 +44,9 @@ export const DynamicFeatureRenderer: React.FC<Props> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [fileUploadName, setFileUploadName] = useState<string | null>(null);
+  const [isUploadingFile, setIsUploadingFile] = useState(false);
+  const [fileUploadSuccess, setFileUploadSuccess] = useState(false);
+  const [fileUploadSize, setFileUploadSize] = useState<string | null>(null);
 
   const primaryOp = feature.apiOperations[0];
   const method = primaryOp?.method || (feature.isDestructive ? 'DELETE' : 'GET');
@@ -195,25 +198,64 @@ export const DynamicFeatureRenderer: React.FC<Props> = ({
                     <option value="OPERATOR">OPERATOR Scope</option>
                   </select>
                 ) : field.type === 'file' ? (
-                  <div className="flex items-center gap-2">
-                    <label className="btn-secondary px-3 py-1.5 text-xs cursor-pointer">
-                      <Upload size={13} />
-                      Choose File
-                      <input
-                        type="file"
-                        className="hidden"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) {
-                            setFileUploadName(file.name);
-                            handleInputChange(field.name, file.name);
-                          }
-                        }}
-                      />
-                    </label>
-                    <span className="text-xs font-mono text-[var(--text-muted)] truncate max-w-[150px]">
-                      {fileUploadName || 'No file selected'}
-                    </span>
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center gap-2">
+                      <label className="btn-secondary px-3 py-1.5 text-xs cursor-pointer">
+                        <Upload size={13} />
+                        {isUploadingFile ? 'Uploading...' : 'Choose File'}
+                        <input
+                          type="file"
+                          className="hidden"
+                          disabled={isUploadingFile}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              setFileUploadName(file.name);
+                              setFileUploadSize(`${(file.size / 1024).toFixed(1)} KB`);
+                              setIsUploadingFile(true);
+                              setFileUploadSuccess(false);
+
+                              const reader = new FileReader();
+                              reader.onload = async () => {
+                                try {
+                                  const dataUrl = reader.result as string;
+                                  const res = await fetch('/api/v1/uploads', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                      fileName: file.name,
+                                      fileType: file.type,
+                                      dataUrl
+                                    })
+                                  });
+                                  if (res.ok) {
+                                    const uploadData = await res.json();
+                                    handleInputChange(field.name, uploadData.url);
+                                    setFileUploadSuccess(true);
+                                  } else {
+                                    handleInputChange(field.name, file.name);
+                                  }
+                                } catch {
+                                  handleInputChange(field.name, file.name);
+                                } finally {
+                                  setIsUploadingFile(false);
+                                }
+                              };
+                              reader.readAsDataURL(file);
+                            }
+                          }}
+                        />
+                      </label>
+                      <span className="text-xs font-mono text-[var(--text-muted)] truncate max-w-[150px]">
+                        {fileUploadName || 'No file selected'}
+                      </span>
+                      {fileUploadSuccess && (
+                        <span className="flex items-center gap-1 text-[11px] text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                          <CheckCircle2 size={11} />
+                          {fileUploadSize}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <input
