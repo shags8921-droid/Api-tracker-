@@ -26,6 +26,7 @@ sealed class Screen(val route: String, val title: String) {
   object SyncHistory : Screen("sync_history", "Sync History")
   object IntegrationSettings : Screen("integration_settings", "Settings")
   object Diagnostics : Screen("diagnostics", "Diagnostics")
+  object WebHub : Screen("web_hub", "Web Management Hub")
 }
 
 data class BottomNavItem(

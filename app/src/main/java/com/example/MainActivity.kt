@@ -47,6 +47,7 @@ import com.example.ui.screens.ManagerHubScreen
 import com.example.ui.screens.OwnerHubScreen
 import com.example.ui.screens.SecureAuthScreen
 import com.example.ui.screens.SyncHistoryScreen
+import com.example.ui.screens.WebHubScreen
 import com.example.ui.screens.WelcomeScreen
 import com.example.ui.theme.CyanNeon
 import com.example.ui.theme.SitePulseTheme
@@ -313,7 +314,8 @@ fun SitePulseApp(viewModel: MainViewModel) {
                 popUpTo(0) { inclusive = true }
               }
             },
-            onOpenDiagnostics = { navController.navigate(Screen.Diagnostics.route) }
+            onOpenDiagnostics = { navController.navigate(Screen.Diagnostics.route) },
+            onOpenWebHub = { navController.navigate(Screen.WebHub.route) }
           )
         }
 
@@ -328,6 +330,13 @@ fun SitePulseApp(viewModel: MainViewModel) {
               navController.navigate(Screen.DiscoveryProgress.route)
               viewModel.startDiscovery {}
             }
+          )
+        }
+
+        // 12. Full Web Management Hub Screen
+        composable(Screen.WebHub.route) {
+          WebHubScreen(
+            onBack = { navController.popBackStack() }
           )
         }
       }

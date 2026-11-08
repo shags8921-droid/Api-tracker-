@@ -258,3 +258,86 @@ test('unknown API routes 404 as JSON; oversized/malformed errors do not leak', a
   const r = await h.call('GET', '/nope', { token: a.token });
   assert.equal(r.status, 404);
 });
+
+import { isPrivateAddress, safeLookup } from '../lib/probe.js';
+
+test('probe: requires auth, blocks private targets, uses injected fetcher for public hosts', async () => {
+  const seen = [];
+  const probeGet = async (origin, p) => {
+    seen.push(origin + p);
+    if (p.endsWith('openapi.json')) return { ok: true, status: 200, latency: 5, json: { paths: { '/orders': { get: { summary: 'List' }, parameters: [] } } } };
+    return { ok: true, status: 200, latency: 5 };
+  };
+  const h = boot({ probeGet });
+  assert.equal((await h.call('POST', '/discovery/probe', { body: { targetUrl: 'https://shop.example.com' } })).status, 401);
+  const a = await register(h, 'a@ex.com');
+  for (const u of ['https://localhost', 'https://169.254.169.254', 'http://shop.example.com', 'https://10.0.0.1', 'https://x.internal']) {
+    assert.equal((await h.call('POST', '/discovery/probe', { token: a.token, body: { targetUrl: u } })).status, 400, u);
+  }
+  assert.equal(seen.length, 0, 'no fetch attempted for blocked targets');
+  const ok = await h.call('POST', '/discovery/probe', { token: a.token, body: { targetUrl: 'https://shop.example.com', authToken: 'tok-secret-123456' } });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.endpoints.length, 1);
+  assert.equal(ok.body.endpoints[0].method, 'GET');
+  assert.ok(!JSON.stringify(h.db.auditLogs).includes('tok-secret-123456'));
+});
+
+test('probe: private/reserved address classification and connect-time lookup block', async () => {
+  for (const ip of ['127.0.0.1', '10.1.2.3', '172.16.0.1', '192.168.1.1', '169.254.169.254', '100.64.0.1', '::1', 'fd00::1', '::ffff:127.0.0.1', '0.0.0.0']) assert.equal(isPrivateAddress(ip), true, ip);
+  for (const ip of ['8.8.8.8', '1.1.1.1', '2606:4700:4700::1111']) assert.equal(isPrivateAddress(ip), false, ip);
+  const err = await new Promise((r) => safeLookup('localhost', {}, (e) => r(e)));
+  assert.equal(err?.code, 'EBLOCKED');
+});
+
+const PNG = 'data:image/png;base64,' + Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32)]).toString('base64');
+
+test('uploads: typed, signature-checked, tenant-private, quota-limited', async () => {
+  const h = boot();
+  const a = await register(h, 'a@ex.com');
+  const b = await register(h, 'b@ex.com');
+  assert.equal((await h.call('POST', '/uploads', { body: { fileName: 'x.png', dataUrl: PNG } })).status, 401);
+  const up = await h.call('POST', '/uploads', { token: a.token, body: { fileName: '../../evil.png', dataUrl: PNG } });
+  assert.equal(up.status, 201, JSON.stringify(up.body));
+  assert.equal(up.body.fileName, 'evil.png');
+  assert.match(up.body.url, /^\/api\/v1\/uploads\/up_[a-f0-9]{24}\.png$/);
+  const name = up.body.url.split('/').pop();
+  assert.equal((await h.call('GET', `/uploads/${name}`, { token: a.token })).status, 200);
+  assert.equal((await h.call('GET', `/uploads/${name}`, { token: b.token })).status, 404);
+  assert.equal((await h.call('GET', '/uploads/..%2Fdatabase.json', { token: a.token })).status, 404);
+  const html = 'data:text/html;base64,' + Buffer.from('<script>1</script>').toString('base64');
+  assert.equal((await h.call('POST', '/uploads', { token: a.token, body: { fileName: 'x.html', dataUrl: html } })).status, 415);
+  const svg = 'data:image/svg+xml;base64,' + Buffer.from('<svg/>').toString('base64');
+  assert.equal((await h.call('POST', '/uploads', { token: a.token, body: { fileName: 'x.svg', dataUrl: svg } })).status, 415);
+  const fake = 'data:image/png;base64,' + Buffer.from('not a png at all').toString('base64');
+  assert.equal((await h.call('POST', '/uploads', { token: a.token, body: { fileName: 'x.png', dataUrl: fake } })).status, 415);
+  h.db.uploads.push({ id: 'up_fill', orgId: a.organisation.id, sizeBytes: 100 * 1048576, mimeType: 'text/plain', originalName: 'f', uploadedAt: 0 });
+  assert.equal((await h.call('POST', '/uploads', { token: a.token, body: { fileName: 'y.png', dataUrl: PNG } })).status, 403);
+});
+
+test('notifications are tenant-scoped; outbox is owner-only and never claims to have sent mail', async () => {
+  const h = boot();
+  const a = await register(h, 'a@ex.com');
+  const b = await register(h, 'b@ex.com');
+  const inv = await h.call('POST', '/admin/users/invite', { token: a.token, body: { email: 'm@ex.com' } });
+  assert.equal(inv.status, 201);
+  const na = await h.call('GET', '/notifications', { token: a.token });
+  assert.equal(na.body.notifications.length, 1);
+  assert.equal((await h.call('GET', '/notifications', { token: b.token })).body.notifications.length, 0);
+  assert.equal((await h.call('POST', `/notifications/${na.body.notifications[0].id}/read`, { token: b.token })).status, 404);
+  assert.equal((await h.call('POST', `/notifications/${na.body.notifications[0].id}/read`, { token: a.token })).status, 200);
+  const ob = await h.call('GET', '/admin/outbox', { token: a.token });
+  assert.equal(ob.body[0].status, 'QUEUED_NOT_SENT');
+  assert.ok(!JSON.stringify(ob.body).includes(inv.body.temporaryPassword));
+  const login = await h.call('POST', '/auth/login', { body: { email: 'm@ex.com', password: inv.body.temporaryPassword } });
+  assert.equal((await h.call('GET', '/admin/outbox', { token: login.body.token })).status, 403);
+});
+
+test('client-reported audit entries use the session identity and are redacted', async () => {
+  const h = boot();
+  const a = await register(h, 'a@ex.com');
+  const r = await h.call('POST', '/audit', { token: a.token, body: { title: 'x', details: 'password=hunter22', performedBy: 'Admin Root', category: 'EVIL' } });
+  assert.equal(r.status, 201);
+  assert.match(r.body.performedBy, /\(OWNER\)/);
+  assert.ok(!r.body.details.includes('hunter22'));
+  assert.equal(r.body.category, 'FEATURE_CHANGE');
+});

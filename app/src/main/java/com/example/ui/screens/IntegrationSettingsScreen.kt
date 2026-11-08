@@ -56,6 +56,7 @@ fun IntegrationSettingsScreen(
   config: WebsiteConfigEntity?,
   onDisconnect: () -> Unit,
   onOpenDiagnostics: () -> Unit,
+  onOpenWebHub: () -> Unit = {},
   modifier: Modifier = Modifier
 ) {
   val scrollState = rememberScrollState()
@@ -178,6 +179,20 @@ fun IntegrationSettingsScreen(
       }
 
       // Quick Tools
+      Button(
+        onClick = onOpenWebHub,
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = CyanNeon.copy(alpha = 0.2f), contentColor = CyanNeon),
+        modifier = Modifier
+          .fillMaxWidth()
+          .height(48.dp)
+          .testTag("open_web_hub_button")
+      ) {
+        Icon(imageVector = Icons.Default.Settings, contentDescription = null, tint = CyanNeon, modifier = Modifier.size(18.dp))
+        Spacer(modifier = Modifier.width(8.dp))
+        Text("Launch Full Web Hub (24 Discovered Modules)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+      }
+
       OutlinedButton(
         onClick = onOpenDiagnostics,
         shape = RoundedCornerShape(12.dp),

@@ -13,6 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { createStore } from './lib/store.js';
+import { safeGet } from './lib/probe.js';
 import {
   hashPassword, verifyPassword, DUMMY_HASH, validatePasswordStrength, signToken, verifyToken,
   normaliseEmail, isValidEmail, publicUser, createLoginThrottle
@@ -45,7 +46,7 @@ export function createApp(opts) {
     express, dataDir, authSecret, distDir = null, now = () => Date.now(),
     allowedOrigins = [], production = false, demo = false, demoPassword = null,
     allowSimulatedPayments = false, platformAdminEmails = [], trustProxy = false,
-    gatewayVerifiers = {}, logger = console, rateLimits = {}
+    gatewayVerifiers = {}, logger = console, rateLimits = {}, probeGet = safeGet
   } = opts;
 
   if (!express) throw new Error('createApp requires an express instance');
@@ -88,6 +89,22 @@ export function createApp(opts) {
     db.counters.invoice += 1;
     return `INV-${new Date(now()).getUTCFullYear()}-${String(db.counters.invoice).padStart(6, '0')}`;
   };
+
+  // Notifications are stored in-app. The outbox only QUEUES email records: no mail transport is configured,
+  // so nothing is actually sent (status stays QUEUED_NOT_SENT).
+  function queueNotification(orgId, { type, title, message, severity = 'INFO', recipientEmail = null }) {
+    const notif = { id: randomId('notif'), orgId, type, title, message, severity, read: false, timestamp: now() };
+    db.notifications.unshift(notif);
+    if (db.notifications.length > 5000) db.notifications.length = 5000;
+    if (recipientEmail) {
+      db.emailOutbox.unshift({
+        id: randomId('outbox'), orgId, to: recipientEmail, subject: `[SitePulse AI] ${title}`, bodyText: message,
+        status: 'QUEUED_NOT_SENT', sentAt: new Date(now()).toISOString(), eventType: type
+      });
+      if (db.emailOutbox.length > 5000) db.emailOutbox.length = 5000;
+    }
+    return notif;
+  }
 
   function audit(req, category, title, details, status = 'SUCCESS', extra = {}) {
     db.auditLogs.push({
@@ -149,7 +166,10 @@ export function createApp(opts) {
   // ------------------------------------------------------------------ middleware
   app.use(securityHeaders);
   app.use('/api', corsPolicy({ allowedOrigins }));
-  app.use('/api', express.json({ limit: '1mb' }));
+  const jsonSmall = express.json({ limit: '1mb' });
+  const jsonUpload = express.json({ limit: '9mb' });
+  app.use('/api', (req, res, next) =>
+    (req.method === 'POST' && String(req.originalUrl || req.url).split('?')[0] === '/api/v1/uploads' ? jsonUpload : jsonSmall)(req, res, next));
   app.use('/api', (req, res, next) => {
     const start = now();
     inflight += 1;
@@ -440,6 +460,7 @@ export function createApp(opts) {
       tier: plan.tier, status: 'ACTIVE', billingCycle: tx.billingCycle, paymentMethodConfigured: true,
       expiresAt: (sameActiveTier ? sub.expiresAt : now()) + days * DAY_MS, limits: orgLimitsFor(plan)
     };
+    queueNotification(org.id, { type: 'PAYMENT_VERIFIED', title: 'Payment verified', message: `${plan.tier} plan activated. Invoice ${tx.invoiceNumber}.`, recipientEmail: req.auth.email });
     audit(req, 'FEATURE_CHANGE', 'Subscription upgraded', `${plan.tier} ${tx.billingCycle} activated. Invoice ${tx.invoiceNumber}.`);
     commit();
     res.json({ success: true, verified: true, invoiceNumber: tx.invoiceNumber, transaction: tx, orgSubscription: publicOrg(org).subscription });
@@ -602,6 +623,7 @@ export function createApp(opts) {
     });
     db.users.push(user);
     audit(req, 'USER_APPROVAL', 'Team member created', `${email} added as ${role}.`);
+    queueNotification(org.id, { type: 'USER_INVITED', title: 'Team member added', message: `${email} was added as ${role}.`, recipientEmail: email });
     commit();
     // No email service is configured: the owner must pass the one-time password to the new member securely.
     res.status(201).json({ success: true, user: publicUser(user), temporaryPassword, emailSent: false });
@@ -905,6 +927,143 @@ export function createApp(opts) {
       dataEvidence: { sourceEndpoint: '/api/v1/orders/feed & /api/v1/catalog/items', reportingPeriod: 'All stored records' }
     });
   }));
+
+  // ------------------------------------------------------------------ audit write (client-reported events)
+  const AUDIT_CATEGORIES = ['DISCOVERY_SESSION', 'IMPLEMENTATION_ATTEMPT', 'FEATURE_CHANGE', 'USER_APPROVAL', 'ROLLBACK'];
+  const AUDIT_STATUSES = ['SUCCESS', 'INFO', 'WARNING', 'FAILED'];
+  app.post(`${api}/audit`, wrap((req, res) => {
+    const b = bodyOf(req);
+    // Identity comes from the session; client-reported text is redacted and clearly attributable to the caller.
+    audit(
+      req,
+      AUDIT_CATEGORIES.includes(b.category) ? b.category : 'FEATURE_CHANGE',
+      str(b.title, 200) || 'Action performed',
+      str(b.details, 2000),
+      AUDIT_STATUSES.includes(b.status) ? b.status : 'INFO',
+      { websiteId: str(b.websiteId, 64) }
+    );
+    commit();
+    res.status(201).json(db.auditLogs[db.auditLogs.length - 1]);
+  }));
+
+  // ------------------------------------------------------------------ discovery probe (SSRF-safe, live network)
+  const probeLimiter = createRateLimiter({ name: 'probe', windowMs: 60_000, max: rateLimits.probeMax ?? 6, keyFn: (req) => req.auth?.userId || req.ip || 'unknown', now });
+  const PROBE_PATHS = { health: '/api/v1/integration/health', manifest: '/api/v1/integration/manifest', openapi: '/api/v1/openapi.json', sitemap: '/sitemap.xml' };
+
+  app.post(`${api}/discovery/probe`, probeLimiter, wrap(async (req, res) => {
+    const b = bodyOf(req);
+    const check = validatePublicUrl(b.targetUrl, { allowedHosts: demoHosts });
+    if (!check.ok) return res.status(400).json({ error: `Security Policy Violation: ${check.reason}` });
+    if (demoHosts.includes(check.host)) {
+      return res.status(400).json({ error: 'The demo host is a sandbox and is not probed over the network.' });
+    }
+    const origin = new URL(check.url).origin;
+    const headers = { 'User-Agent': 'SitePulse-Discovery-Agent/6.0', Accept: 'application/json' };
+    // Credentials are forwarded only to the validated target and are never stored or logged.
+    if (typeof b.authToken === 'string' && b.authToken) headers.Authorization = `Bearer ${b.authToken.slice(0, 2000)}`;
+    if (typeof b.apiKey === 'string' && b.apiKey) headers['X-API-Key'] = b.apiKey.slice(0, 500);
+
+    const [health, manifest, openapi, sitemap] = await Promise.all(
+      Object.values(PROBE_PATHS).map((p) => probeGet(origin, p, headers))
+    );
+    const endpoints = [];
+    if (openapi.json && openapi.json.paths && typeof openapi.json.paths === 'object') {
+      for (const [p, ops] of Object.entries(openapi.json.paths)) {
+        if (!ops || typeof ops !== 'object') continue;
+        for (const [m, op] of Object.entries(ops)) {
+          if (!['get', 'post', 'put', 'patch', 'delete'].includes(m.toLowerCase())) continue;
+          if (endpoints.length >= 200) break;
+          endpoints.push({ path: str(p, 200), method: m.toUpperCase(), summary: str(op?.summary, 200) || 'API Operation' });
+        }
+      }
+    }
+    audit(req, 'DISCOVERY_SESSION', 'Discovery probe', `Probed ${check.host}.`, 'INFO');
+    commit();
+    res.json({
+      targetHost: origin,
+      isReachable: [health, manifest, openapi, sitemap].some((r) => r.status > 0),
+      latencyMs: health.latency,
+      healthFound: !!health.ok, manifestFound: !!manifest.ok, openApiFound: !!openapi.ok, sitemapFound: !!sitemap.ok,
+      endpoints,
+      details: `Probed ${origin}: health ${health.status}, openapi ${openapi.status}, manifest ${manifest.status}` +
+        (health.error ? ` (${health.error})` : '')
+    });
+  }));
+
+  // ------------------------------------------------------------------ uploads (authenticated, typed, quota-limited)
+  const UPLOAD_TYPES = {
+    'image/png': { ext: 'png', sig: (b) => b.length > 8 && b[0] === 0x89 && b.toString('latin1', 1, 4) === 'PNG' },
+    'image/jpeg': { ext: 'jpg', sig: (b) => b.length > 3 && b[0] === 0xff && b[1] === 0xd8 },
+    'image/gif': { ext: 'gif', sig: (b) => /^GIF8[79]a/.test(b.toString('latin1', 0, 6)) },
+    'image/webp': { ext: 'webp', sig: (b) => b.length > 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP' },
+    'application/pdf': { ext: 'pdf', sig: (b) => b.toString('latin1', 0, 5) === '%PDF-' },
+    'text/plain': { ext: 'txt', sig: (b) => !b.includes(0) },
+    'text/csv': { ext: 'csv', sig: (b) => !b.includes(0) }
+  };
+  const MAX_UPLOAD_BYTES = 6 * 1024 * 1024;
+  const uploadsDir = path.join(path.dirname(store.dbFile), 'uploads');
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  const UPLOAD_NAME_RE = /^up_[a-f0-9]{24}\.[a-z0-9]{2,4}$/;
+
+  app.post(`${api}/uploads`, wrap((req, res) => {
+    const b = bodyOf(req);
+    const m = /^data:([A-Za-z0-9.+/-]+);base64,([A-Za-z0-9+/=\s]+)$/.exec(typeof b.dataUrl === 'string' ? b.dataUrl : '');
+    if (!m) return res.status(400).json({ error: 'dataUrl must be a base64 data URL' });
+    const spec = UPLOAD_TYPES[m[1].toLowerCase()];
+    if (!spec) return res.status(415).json({ error: `Unsupported file type. Allowed: ${Object.keys(UPLOAD_TYPES).join(', ')}` });
+    const buffer = Buffer.from(m[2].replace(/\s/g, ''), 'base64');
+    if (!buffer.length) return res.status(400).json({ error: 'Empty file' });
+    if (buffer.length > MAX_UPLOAD_BYTES) return res.status(413).json({ error: 'File exceeds the 6 MB limit' });
+    if (!spec.sig(buffer)) return res.status(415).json({ error: 'File content does not match its declared type' });
+
+    const org = orgById(req.auth.orgId);
+    const quotaBytes = limitsOf(org).storageMb * 1048576;
+    const used = db.uploads.filter((u) => u.orgId === org.id).reduce((s, u) => s + u.sizeBytes, 0);
+    if (used + buffer.length > quotaBytes) {
+      return res.status(403).json({ error: 'Plan limit reached', message: `Storage quota of ${limitsOf(org).storageMb} MB exceeded. Upgrade to add more.` });
+    }
+    const id = `up_${crypto.randomBytes(12).toString('hex')}`;
+    const storedName = `${id}.${spec.ext}`;
+    fs.writeFileSync(path.join(uploadsDir, storedName), buffer, { mode: 0o600 });
+    const original = path.basename(str(b.fileName, 120)).replace(/[^A-Za-z0-9._-]/g, '_') || 'file';
+    db.uploads.push({ id: storedName, orgId: org.id, originalName: original, mimeType: m[1].toLowerCase(), sizeBytes: buffer.length, uploadedAt: now(), uploadedBy: req.auth.userId });
+    org.usage.storageUsedMb = round((used + buffer.length) / 1048576, 2);
+    queueNotification(org.id, { type: 'FILE_UPLOADED', title: 'Media Asset Stored', message: `File "${original}" (${(buffer.length / 1024).toFixed(1)} KB) uploaded.` });
+    commit();
+    res.status(201).json({ success: true, url: `${api}/uploads/${storedName}`, fileName: original, sizeBytes: buffer.length, mimeType: m[1].toLowerCase(), uploadedAt: now() });
+  }));
+
+  app.get(`${api}/uploads/:name`, (req, res) => {
+    const name = String(req.params.name);
+    const rec = UPLOAD_NAME_RE.test(name) ? db.uploads.find((u) => u.id === name && u.orgId === req.auth.orgId) : null;
+    if (!rec) return res.status(404).json({ error: 'File not found' });
+    const file = path.join(uploadsDir, name);
+    if (!fs.existsSync(file)) return res.status(404).json({ error: 'File not found' });
+    res.setHeader('Content-Type', rec.mimeType);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    res.setHeader('Content-Disposition', `inline; filename="${rec.originalName}"`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.end(fs.readFileSync(file));
+  });
+
+  // ------------------------------------------------------------------ notifications & outbox
+  app.get(`${api}/notifications`, (req, res) => {
+    const mine = db.notifications.filter((n) => n.orgId === req.auth.orgId).sort((a, b) => b.timestamp - a.timestamp).slice(0, 200);
+    res.json({ notifications: mine, unreadCount: mine.filter((n) => !n.read).length });
+  });
+
+  app.post(`${api}/notifications/:id/read`, wrap((req, res) => {
+    const n = db.notifications.find((x) => x.id === req.params.id && x.orgId === req.auth.orgId);
+    if (!n) return res.status(404).json({ error: 'Notification not found' });
+    n.read = true;
+    commit();
+    res.json({ success: true, notif: n });
+  }));
+
+  app.get(`${api}/admin/outbox`, owner, (req, res) => {
+    res.json(db.emailOutbox.filter((e) => e.orgId === req.auth.orgId).slice(0, 200));
+  });
 
   // ------------------------------------------------------------------ demo seed (opt-in, never in production)
   if (demo && db.users.length === 0) {

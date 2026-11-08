@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node web/server/index.js",
     "dev": "node web/server/index.js",
+    "test": "npm test --prefix web",
     "build": "cd web && npm run build"
   },
   "dependencies": {
@@ -14,7 +15,7 @@
     "@capacitor/core": "^8.6.0",
     "@capacitor/network": "^8.0.1",
     "@capacitor/preferences": "^8.0.1",
-    "cors": "^2.8.6",
-    "express": "^5.3.0"
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
   }
 }
