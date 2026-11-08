@@ -1,0 +1,183 @@
+{
+  "host": "2 vCPU Intel(R) Xeon(R) Processor @ 2.30GHz",
+  "node": "v22.23.4",
+  "notes": "Express replaced by test shim; load generator and server in separate processes on the same machine; client-side numbers include loopback overhead",
+  "read": [
+    {
+      "conc": 1,
+      "requests": 43833,
+      "rps": 8767,
+      "p50": 0.1,
+      "p95": 0.2,
+      "p99": 0.3,
+      "max": 8.4,
+      "codes": {
+        "200": 43833
+      },
+      "server": {
+        "rssMB": 105.5,
+        "heapMB": 11,
+        "cpuUserMs": 2506,
+        "cpuSysMs": 691,
+        "auditLogs": 1
+      }
+    },
+    {
+      "conc": 10,
+      "requests": 89691,
+      "rps": 17938,
+      "p50": 0.5,
+      "p95": 1.1,
+      "p99": 1.6,
+      "max": 17.2,
+      "codes": {
+        "200": 89691
+      },
+      "server": {
+        "rssMB": 108.8,
+        "heapMB": 24,
+        "cpuUserMs": 3831,
+        "cpuSysMs": 1009,
+        "auditLogs": 1
+      }
+    },
+    {
+      "conc": 50,
+      "requests": 88104,
+      "rps": 17610,
+      "p50": 2.8,
+      "p95": 4.4,
+      "p99": 5.9,
+      "max": 20.7,
+      "codes": {
+        "200": 88104
+      },
+      "server": {
+        "rssMB": 116.5,
+        "heapMB": 16.1,
+        "cpuUserMs": 3796,
+        "cpuSysMs": 1146,
+        "auditLogs": 1
+      }
+    },
+    {
+      "conc": 200,
+      "requests": 85327,
+      "rps": 17014,
+      "p50": 11.5,
+      "p95": 17,
+      "p99": 21.4,
+      "max": 347.5,
+      "codes": {
+        "200": 85327
+      },
+      "server": {
+        "rssMB": 119.6,
+        "heapMB": 19.7,
+        "cpuUserMs": 3848,
+        "cpuSysMs": 1067,
+        "auditLogs": 1
+      }
+    }
+  ],
+  "login": {
+    "soloRps": 32,
+    "soloP50": 30.4,
+    "concurrentLoginP50": 538.3,
+    "concurrentLoginP95": 827.5,
+    "healthBaseline": {
+      "conc": 5,
+      "requests": 65637,
+      "rps": 21879,
+      "p50": 0.2,
+      "p95": 0.4,
+      "p99": 0.7,
+      "max": 6.8,
+      "codes": {
+        "200": 65637
+      }
+    },
+    "healthDuringLogins": {
+      "conc": 5,
+      "requests": 9,
+      "rps": 2,
+      "p50": 2865.2,
+      "p95": 5078.8,
+      "p99": 5078.8,
+      "max": 5078.8,
+      "codes": {
+        "200": 9
+      }
+    }
+  },
+  "memory": {
+    "before": {
+      "rssMB": 123.2,
+      "heapMB": 28.5,
+      "cpuUserMs": 12366,
+      "cpuSysMs": 895,
+      "auditLogs": 21
+    },
+    "after": {
+      "rssMB": 129.2,
+      "heapMB": 27.5,
+      "cpuUserMs": 3732,
+      "cpuSysMs": 1857,
+      "auditLogs": 2068
+    },
+    "requestsApprox": 10233
+  },
+  "writeVsSize": [
+    {
+      "seededTotal": 2000,
+      "bulkSaveMs": 7,
+      "dbMB": 2.1,
+      "records": 2000,
+      "writeP50": 8.1,
+      "writeP95": 9.6
+    },
+    {
+      "seededTotal": 10000,
+      "bulkSaveMs": 15,
+      "dbMB": 4,
+      "records": 10000,
+      "writeP50": 16.3,
+      "writeP95": 21
+    },
+    {
+      "seededTotal": 20000,
+      "bulkSaveMs": 21,
+      "dbMB": 6.4,
+      "records": 20000,
+      "writeP50": 27.1,
+      "writeP95": 29.7
+    },
+    {
+      "seededTotal": 50000,
+      "bulkSaveMs": 57,
+      "dbMB": 13.6,
+      "records": 50000,
+      "writeP50": 58.6,
+      "writeP95": 66.1
+    }
+  ],
+  "mixedWrites": {
+    "conc": 20,
+    "requests": 99,
+    "rps": 16,
+    "p50": 1150.4,
+    "p95": 2244.8,
+    "p99": 3441.9,
+    "max": 3441.9,
+    "codes": {
+      "201": 99
+    }
+  },
+  "burst": {
+    "requests": 500,
+    "ok": 500,
+    "totalMs": 75,
+    "p95": 61.6,
+    "recoveryHealthP95": 0.5
+  }
+}

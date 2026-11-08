@@ -1,0 +1,79 @@
+[
+  {
+    "id": "PERF-001",
+    "area": "Performance",
+    "feature": "Read throughput/latency: GET /auth/me and /catalog/items at 1/10/50/200 concurrency (5s each)",
+    "expected": "no errors; p95 < 250ms at 50 conc",
+    "severity": "P2",
+    "actual": "c1: 8767 rps p50=0.1 p95=0.2 p99=0.3ms | c10: 17938 rps p50=0.5 p95=1.1 p99=1.6ms | c50: 17610 rps p50=2.8 p95=4.4 p99=5.9ms | c200: 17014 rps p50=11.5 p95=17 p99=21.4ms",
+    "pass": true,
+    "status": "PASS",
+    "evidence": "[{\"c\":1,\"cpuMs\":3197,\"rssMB\":105.5},{\"c\":10,\"cpuMs\":4840,\"rssMB\":108.8},{\"c\":50,\"cpuMs\":4942,\"rssMB\":116.5},{\"c\":200,\"cpuMs\":4915,\"rssMB\":119.6}]"
+  },
+  {
+    "id": "PERF-002",
+    "area": "Performance",
+    "feature": "Login (scrypt) throughput and event-loop blocking: /health latency while 20 clients log in",
+    "expected": "/health p95 < 250ms during logins",
+    "severity": "P1",
+    "actual": "single login p50=30.4ms (32/s); /health p95 idle=0.4ms vs during 20 concurrent logins=5078.8ms (max 5078.8ms); login p95 under load=827.5ms",
+    "pass": false,
+    "status": "FAIL",
+    "evidence": "scryptSync runs on the main thread: concurrent logins/registrations/password changes block every other request"
+  },
+  {
+    "id": "PERF-006",
+    "area": "Performance",
+    "feature": "Memory growth: sustained mixed reads + audit writes for 8s on a small DB, RSS/heap before vs after",
+    "expected": "growth < 100MB",
+    "severity": "P2",
+    "actual": "10233 requests issued: RSS 123.2→129.2MB, heap 28.5→27.5MB, audit rows=2068",
+    "pass": true,
+    "status": "PASS",
+    "evidence": "single run; no leak conclusion without a longer soak"
+  },
+  {
+    "id": "PERF-003",
+    "area": "Performance",
+    "feature": "Write latency vs database size (each mutation re-serialises + fsyncs the whole JSON file)",
+    "expected": "p95 < 250ms at 20k records",
+    "severity": "P1",
+    "actual": "2000 recs (2.1MB): write p50=8.1 p95=9.6ms | 10000 recs (4MB): write p50=16.3 p95=21ms | 20000 recs (6.4MB): write p50=27.1 p95=29.7ms | 50000 recs (13.6MB): write p50=58.6 p95=66.1ms",
+    "pass": true,
+    "status": "PASS",
+    "evidence": "confirms the single-file store does not scale; reads are in-memory and stay fast"
+  },
+  {
+    "id": "PERF-004",
+    "area": "Performance",
+    "feature": "Concurrent mixed writes on a mid-size DB (c=20, 5s): throughput, errors, consistency",
+    "expected": "no errors; unique ids",
+    "severity": "P2",
+    "actual": "16 writes/s, p50=1150.4 p95=2244.8 p99=3441.9ms, codes={\"201\":99}",
+    "pass": true,
+    "status": "PASS",
+    "evidence": ""
+  },
+  {
+    "id": "PERF-005",
+    "area": "Performance",
+    "feature": "Burst/spike: 500 simultaneous requests, then recovery",
+    "expected": "all served; recovery latency normal",
+    "severity": "P2",
+    "actual": "500/500 ok in 75ms (p95 61.6ms); post-burst /health p95=0.5ms",
+    "pass": true,
+    "status": "PASS",
+    "evidence": ""
+  },
+  {
+    "id": "PERF-007",
+    "area": "Performance",
+    "feature": "15-minute soak / sustained-traffic stability",
+    "expected": "n/a",
+    "severity": "P3",
+    "actual": "NOT EXECUTED: soak limited to seconds per scenario in this session",
+    "pass": false,
+    "status": "UNVERIFIED",
+    "evidence": "recommend a >=1h soak on real Express"
+  }
+]
