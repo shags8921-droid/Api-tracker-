@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { api } from '../services/api';
 import {
   HelpCircle,
   PlusCircle,
@@ -51,21 +52,16 @@ export const CustomerSupportCenterScreen: React.FC<Props> = ({
     setLoading(true);
     setErrorMsg(null);
     try {
-      const res = await fetch(`/api/v1/commercial/support/tickets?orgId=${encodeURIComponent(currentOrgId)}`);
-      if (res.ok) {
-        const data = await res.json();
-        setTickets(data.tickets || []);
-        if (selectedTicket) {
-          const updated = (data.tickets || []).find((t: SupportTicketItem) => t.id === selectedTicket.id);
-          if (updated) setSelectedTicket(updated);
-        }
-      } else {
-        // Fallback default tickets if backend response is non-200
-        setTickets([]);
+      const { data } = await api.get<SupportTicketItem[]>('/api/v1/commercial/support/tickets');
+      const list = Array.isArray(data) ? data : [];
+      setTickets(list);
+      if (selectedTicket) {
+        const updated = list.find((t) => t.id === selectedTicket.id);
+        if (updated) setSelectedTicket(updated);
       }
     } catch (err: any) {
       console.error('Failed to load tickets:', err);
-      setErrorMsg('Could not connect to support service. Please retry.');
+      setErrorMsg(err?.message || 'Could not load support tickets. Please retry.');
     } finally {
       setLoading(false);
     }
@@ -82,35 +78,21 @@ export const CustomerSupportCenterScreen: React.FC<Props> = ({
     setCreatingTicket(true);
     setErrorMsg(null);
     try {
-      const res = await fetch('/api/v1/commercial/support/tickets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          orgId: currentOrgId,
-          orgName: currentOrgName,
-          authorEmail: currentUserEmail,
-          subject: newSubject.trim(),
-          category: newCategory,
-          priority: newPriority,
-          initialMessage: newInitialMessage.trim()
-        })
+      const { data } = await api.post<{ ticket: SupportTicketItem }>('/api/v1/commercial/support/tickets', {
+        subject: newSubject.trim(),
+        category: newCategory,
+        priority: newPriority,
+        messageText: newInitialMessage.trim()
       });
-
-      if (res.ok) {
-        const data = await res.json();
-        setSuccessMsg(`Ticket #${data.ticket.id} created successfully! Our engineering team has been notified.`);
-        setShowNewModal(false);
-        setNewSubject('');
-        setNewInitialMessage('');
-        await fetchTickets();
-        setSelectedTicket(data.ticket);
-        setTimeout(() => setSuccessMsg(null), 5000);
-      } else {
-        const errData = await res.json();
-        setErrorMsg(errData.error || 'Failed to create ticket');
-      }
+      setSuccessMsg(`Ticket #${data.ticket.id} created. It is stored in your workspace; no email or on-call alert is sent automatically.`);
+      setShowNewModal(false);
+      setNewSubject('');
+      setNewInitialMessage('');
+      await fetchTickets();
+      setSelectedTicket(data.ticket);
+      setTimeout(() => setSuccessMsg(null), 5000);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Network error while creating ticket');
+      setErrorMsg(err?.message || 'Failed to create ticket');
     } finally {
       setCreatingTicket(false);
     }
@@ -120,31 +102,15 @@ export const CustomerSupportCenterScreen: React.FC<Props> = ({
     if (!selectedTicket || !newMessageText.trim()) return;
     setSubmittingReply(true);
     try {
-      // Append local message and update via mock/server
-      const updatedMessages = [
-        ...selectedTicket.messages,
-        {
-          id: `msg_${Date.now()}`,
-          sender: 'CUSTOMER' as const,
-          senderName: currentUserEmail,
-          messageText: newMessageText.trim(),
-          timestamp: Date.now()
-        }
-      ];
-
-      const updated = {
-        ...selectedTicket,
-        messages: updatedMessages,
-        updatedAt: Date.now(),
-        status: 'WAITING_ON_CUSTOMER' === selectedTicket.status ? 'IN_PROGRESS' : selectedTicket.status
-      };
-
-      // Optimistic update
-      setSelectedTicket(updated);
-      setTickets(prev => prev.map(t => t.id === updated.id ? updated : t));
+      const { data } = await api.post<{ ticket: SupportTicketItem }>(
+        `/api/v1/commercial/support/tickets/${encodeURIComponent(selectedTicket.id)}/messages`,
+        { messageText: newMessageText.trim() }
+      );
+      setSelectedTicket(data.ticket);
+      setTickets((prev) => prev.map((t) => (t.id === data.ticket.id ? data.ticket : t)));
       setNewMessageText('');
     } catch (err: any) {
-      setErrorMsg('Failed to post reply message');
+      setErrorMsg(err?.message || 'Failed to post reply message');
     } finally {
       setSubmittingReply(false);
     }

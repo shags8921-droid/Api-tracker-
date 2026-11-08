@@ -1,3 +1,10 @@
+> **Correction (Phase 11 audit remediation).** The statements below that describe this build as production-ready,
+> "13/13 PASS", or having enforced role/tenant security were **not accurate** for the code at the time they were written:
+> the server trusted client-supplied role/tenant headers, billing upgrades required no payment, and several checks were
+> hard-coded. See `PHASE11_AUDIT_REPORT.md` for the evidence. The server was rewritten with signed-session auth,
+> tenant-scoped data, fail-closed payments and fail-closed persistence (`web/server/`, tests via `npm test` in `web/`).
+> Still NOT real: website discovery, AI model, payment gateways, outbound webhooks/email, Android sync execution.
+
 # Phase 10 — SaaS Commercialisation, Branding & Production Launch Report
 **Product Name:** SitePulse AI  
 **Release Version:** v5.0 (Commercial SaaS Production)  

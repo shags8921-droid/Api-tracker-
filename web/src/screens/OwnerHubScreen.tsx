@@ -53,6 +53,7 @@ export const OwnerHubScreen: React.FC<Props> = ({
   const [systemHealth, setSystemHealth] = useState<any | null>(null);
   const [isLoadingData, setIsLoadingData] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [oneTimeNotice, setOneTimeNotice] = useState<string | null>(null);
 
   // Invite Modal State
   const [showInviteModal, setShowInviteModal] = useState(false);
@@ -96,11 +97,14 @@ export const OwnerHubScreen: React.FC<Props> = ({
     e.preventDefault();
     if (!inviteEmail) return;
     try {
-      await api.post('/api/v1/admin/users/invite', {
-        name: inviteName,
-        email: inviteEmail,
-        role: inviteRole
-      });
+      const { data } = await api.post<{ temporaryPassword: string; emailSent: boolean }>(
+        '/api/v1/admin/users/invite',
+        { name: inviteName, email: inviteEmail, role: inviteRole },
+        { 'Idempotency-Key': api.newIdempotencyKey() }
+      );
+      setOneTimeNotice(
+        `Account created for ${inviteEmail}. No email was sent. Share this temporary password securely; it is shown only once: ${data.temporaryPassword}`
+      );
       setShowInviteModal(false);
       setInviteName('');
       setInviteEmail('');
@@ -114,10 +118,13 @@ export const OwnerHubScreen: React.FC<Props> = ({
     e.preventDefault();
     if (!webhookUrl) return;
     try {
-      await api.post('/api/v1/integrations/webhooks', {
+      const { data } = await api.post<{ secret: string; deliveryImplemented: boolean }>('/api/v1/integrations/webhooks', {
         url: webhookUrl,
-        secret: webhookSecret
+        secret: webhookSecret || undefined
       });
+      setOneTimeNotice(
+        `Webhook registered. Signing secret (shown only once): ${data.secret}. Note: outbound event delivery is not implemented yet.`
+      );
       setShowWebhookModal(false);
       setWebhookUrl('');
       setWebhookSecret('');
@@ -147,7 +154,7 @@ export const OwnerHubScreen: React.FC<Props> = ({
             <div>
               <h2 className="text-lg font-bold text-rose-400">403 Permission Denied — Owner Authority Required</h2>
               <p className="text-xs text-[var(--text-secondary)] mt-0.5 font-mono">
-                Current Role Scope: MANAGER (Gated Server-Side via X-User-Role)
+                Current Role Scope: MANAGER (enforced server-side from your signed session)
               </p>
             </div>
           </div>
@@ -227,6 +234,15 @@ export const OwnerHubScreen: React.FC<Props> = ({
           </button>
         ))}
       </div>
+
+      {oneTimeNotice && (
+        <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-center justify-between gap-3">
+          <span className="break-all select-all">{oneTimeNotice}</span>
+          <button onClick={() => setOneTimeNotice(null)} className="text-[var(--text-muted)] hover:text-white shrink-0">
+            I have saved it
+          </button>
+        </div>
+      )}
 
       {/* Error Alert */}
       {apiError && (

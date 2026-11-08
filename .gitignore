@@ -16,3 +16,7 @@
 local.properties
 .env
 debug.keystore
+
+# Runtime data (contains user records and password hashes) - never commit
+web/data/
+web/server/data/

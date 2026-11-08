@@ -187,7 +187,6 @@ export const MultiTenantWorkspaceScreen: React.FC<Props> = ({
                   {!isSelected ? (
                     <button
                       onClick={() => {
-                        api.setOrgId(org.id);
                         onSwitchOrg(org.id);
                         platform.notification.showToast(`Switched active workspace to ${org.name}`, 'INFO');
                       }}

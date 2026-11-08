@@ -44,22 +44,65 @@ import {
 import { WebsiteDiscoveryEngine, INITIAL_DISCOVERY_STAGES } from './domain/discovery/engine';
 import { AdvancedAiIntegrationAgent } from './domain/ai/agent';
 import { Storage } from './services/storage';
-import { api } from './services/api';
+import { api, SessionUser, UNAUTHORIZED_EVENT } from './services/api';
+import { AuthGate } from './components/AuthGate';
 
+/** Top-level: nothing in the app renders until the server has verified a session. */
 export const App: React.FC = () => {
+  const [user, setUser] = useState<SessionUser | null>(null);
+  const [checking, setChecking] = useState(true);
+  const [expired, setExpired] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    api.restoreSession().then((u) => {
+      if (alive) {
+        setUser(u);
+        setChecking(false);
+      }
+    });
+    const onUnauthorized = () => {
+      setUser(null);
+      setExpired(true);
+    };
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    return () => {
+      alive = false;
+      window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    };
+  }, []);
+
+  if (checking) return null;
+  if (!user) {
+    return <AuthGate sessionExpired={expired} onAuthenticated={(u) => { setExpired(false); setUser(u); }} />;
+  }
+  return (
+    <AppShell
+      key={user.id}
+      user={user}
+      onSignOut={async () => {
+        await api.logout();
+        setUser(null);
+      }}
+    />
+  );
+};
+
+const AppShell: React.FC<{ user: SessionUser; onSignOut: () => void }> = ({ user, onSignOut }) => {
   const [currentScreen, setCurrentScreen] = useState<ScreenId>('welcome');
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [isMobileOpen, setIsMobileOpen] = useState(false);
 
   // Role-Based Access Control State (Requirement 8)
-  const [userRole, setUserRole] = useState<'OWNER' | 'MANAGER'>('OWNER');
-  const [activeOrgId, setActiveOrgId] = useState<string>('org_acme_corp');
+  // Role and tenant come from the server-verified session and cannot be changed in the UI.
+  const userRole = user.role;
+  const activeOrgId = user.orgId;
 
   // Active Connection State
   const [websiteUrl, setWebsiteUrl] = useState('https://demo.sitepulse.internal');
   const [integrationName, setIntegrationName] = useState('Enterprise Sandbox Portal');
   const [selectedAuthType, setSelectedAuthType] = useState<AuthType>('OAUTH2_PKCE');
-  const [authToken, setAuthToken] = useState('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.dev_session');
+  const [authToken, setAuthToken] = useState('');
   const [apiKey, setApiKey] = useState('');
 
   const [savedWebsites, setSavedWebsites] = useState<WebsiteConfig[]>([]);
@@ -129,8 +172,7 @@ export const App: React.FC = () => {
   // Update HTML Theme Attribute & API Role Header
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
-    api.setUserRole(userRole);
-  }, [theme, userRole]);
+  }, [theme]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -149,7 +191,7 @@ export const App: React.FC = () => {
       category,
       title,
       details,
-      performedBy: userRole === 'OWNER' ? 'Executive Owner' : 'Manager Operator',
+      performedBy: `${user.email} (${userRole})`,
       websiteId: activeConfig?.id || 'current',
       status
     };
@@ -178,16 +220,6 @@ export const App: React.FC = () => {
       setIntegrationName(newActive.name);
       showToast(`Switched active website to ${newActive.name}`);
       addAuditEntry('FEATURE_CHANGE', `Switched active website`, `Now targeting ${newActive.url}`);
-    }
-  };
-
-  const handleSwitchRole = (role: 'OWNER' | 'MANAGER') => {
-    setUserRole(role);
-    api.setUserRole(role);
-    showToast(`Role switched to ${role}. Server permission headers updated.`);
-    addAuditEntry('USER_APPROVAL', `Session Role Switch`, `User switched role to ${role}`);
-    if (role === 'MANAGER' && currentScreen === 'owner') {
-      setCurrentScreen('manager');
     }
   };
 
@@ -243,7 +275,7 @@ export const App: React.FC = () => {
       `Successfully indexed ${analysedFeatures.length} features, ${res.pages.length} pages, and calculated transparent coverage.`,
       'SUCCESS'
     );
-    showToast('Discovery complete! 14 features indexed.');
+    showToast(`Discovery complete (simulated): ${analysedFeatures.length} features indexed.`);
   };
 
   const handleExecuteFeatureAction = (feature: DiscoveredFeature) => {
@@ -256,13 +288,14 @@ export const App: React.FC = () => {
   };
 
   const executeActionNow = (feature: DiscoveredFeature) => {
+    // Discovery is simulated and no live connector to the target website exists yet, so nothing is dispatched.
     const method = feature.apiOperations[0]?.method || (feature.isDestructive ? 'DELETE' : 'GET');
-    showToast(`Executed action: ${method} ${feature.route} (HTTP 200 OK)`);
+    showToast(`Not executed: no live connection to the target website. Recorded intent ${method} ${feature.route}.`);
     addAuditEntry(
       'FEATURE_CHANGE',
-      `Executed Action: ${feature.name}`,
-      `Dispatched verified REST operation ${method} ${feature.route}. Response: 200 OK.`,
-      'SUCCESS'
+      `Action requested (not executed): ${feature.name}`,
+      `Intent ${method} ${feature.route} was logged only; live execution is not connected.`,
+      'INFO'
     );
   };
 
@@ -356,7 +389,9 @@ export const App: React.FC = () => {
         savedWebsites={savedWebsites}
         onSwitchWebsite={handleSwitchWebsite}
         userRole={userRole}
-        onSwitchRole={handleSwitchRole}
+        userLabel={user.email}
+        isPlatformAdmin={!!user.isPlatformAdmin}
+        onSignOut={onSignOut}
         onOpenGlobalSearch={() => setIsSearchOpen(true)}
         recentFeatures={recentFeatures}
         onSelectRecentFeature={(rf) => {
@@ -429,15 +464,14 @@ export const App: React.FC = () => {
           {currentScreen === 'workspaces' && (
             <MultiTenantWorkspaceScreen
               activeOrgId={activeOrgId}
-              onSwitchOrg={(id) => {
-                setActiveOrgId(id);
-                api.setOrgId(id);
+              onSwitchOrg={() => {
+                /* One account belongs to one organisation; the server enforces this. */
               }}
               onNavigateToOnboarding={() => setCurrentScreen('connect')}
             />
           )}
 
-          {currentScreen === 'platform' && (
+          {currentScreen === 'platform' && user.isPlatformAdmin && (
             <PlatformAdminDashboardScreen />
           )}
 
@@ -581,7 +615,7 @@ export const App: React.FC = () => {
             <CustomerSupportCenterScreen
               currentOrgId={activeOrgId}
               currentOrgName={activeConfig?.name || 'Primary Workspace'}
-              currentUserEmail={userRole === 'OWNER' ? 'owner@sitepulse.ai' : 'manager@sitepulse.ai'}
+              currentUserEmail={user.email}
             />
           )}
 

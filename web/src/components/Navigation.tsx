@@ -65,7 +65,9 @@ interface Props {
   savedWebsites: WebsiteConfig[];
   onSwitchWebsite: (id: string) => void;
   userRole: 'OWNER' | 'MANAGER';
-  onSwitchRole: (role: 'OWNER' | 'MANAGER') => void;
+  userLabel: string;
+  isPlatformAdmin: boolean;
+  onSignOut: () => void;
   onOpenGlobalSearch: () => void;
   recentFeatures: DiscoveredFeature[];
   onSelectRecentFeature: (feature: DiscoveredFeature) => void;
@@ -82,7 +84,9 @@ export const Navigation: React.FC<Props> = ({
   savedWebsites,
   onSwitchWebsite,
   userRole,
-  onSwitchRole,
+  userLabel,
+  isPlatformAdmin,
+  onSignOut,
   onOpenGlobalSearch,
   recentFeatures,
   onSelectRecentFeature,
@@ -96,6 +100,7 @@ export const Navigation: React.FC<Props> = ({
     label: string;
     icon: any;
     isOwnerOnly?: boolean;
+    isPlatformOnly?: boolean;
   }
 
   const navSections: Array<{ title: string; items: NavItem[] }> = [
@@ -113,7 +118,7 @@ export const Navigation: React.FC<Props> = ({
       title: 'SAAS WORKSPACES & FLEET',
       items: [
         { id: 'workspaces', label: '6. Business Workspaces', icon: Building2 },
-        { id: 'platform', label: '7. Platform Operator', icon: Server }
+        { id: 'platform', label: '7. Platform Operator', icon: Server, isPlatformOnly: true }
       ]
     },
     {
@@ -234,18 +239,17 @@ export const Navigation: React.FC<Props> = ({
             </kbd>
           </button>
 
-          {/* User Role Switcher (Requirement 8) */}
+          {/* Signed-in identity (role is assigned by the server, not selectable here) */}
           <div className="flex items-center gap-1.5 p-1 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-color)]">
             <UserCheck size={13} className="text-indigo-400 ml-1" />
-            <span className="text-[10px] font-mono text-[var(--text-muted)]">Role:</span>
-            <select
-              value={userRole}
-              onChange={(e) => onSwitchRole(e.target.value as any)}
-              className="bg-transparent text-xs font-bold text-cyan-400 outline-none cursor-pointer font-mono"
+            <span className="text-[10px] font-mono text-[var(--text-muted)] max-w-[180px] truncate">{userLabel}</span>
+            <span className="text-xs font-bold text-cyan-400 font-mono">{userRole === 'OWNER' ? 'OWNER' : 'MANAGER'}</span>
+            <button
+              onClick={onSignOut}
+              className="ml-1 px-2 py-0.5 rounded-lg text-[10px] font-mono text-[var(--text-secondary)] hover:text-white border border-[var(--border-color)]"
             >
-              <option value="OWNER">EXECUTIVE OWNER</option>
-              <option value="MANAGER">MANAGER OPS</option>
-            </select>
+              Sign out
+            </button>
           </div>
         </div>
       </div>
@@ -322,7 +326,7 @@ export const Navigation: React.FC<Props> = ({
                 {sec.title}
               </div>
               <div className="space-y-0.5">
-                {sec.items.map((item) => {
+                {sec.items.filter((item) => !item.isPlatformOnly || isPlatformAdmin).map((item) => {
                   const IconComp = item.icon;
                   const isActive = currentScreen === item.id;
                   const isRestricted = item.isOwnerOnly && userRole !== 'OWNER';

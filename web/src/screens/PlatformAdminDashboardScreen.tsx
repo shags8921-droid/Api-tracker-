@@ -78,7 +78,7 @@ export const PlatformAdminDashboardScreen: React.FC = () => {
         <div className="glass-panel p-4 border-l-4 border-emerald-500 space-y-1">
           <span className="text-[10px] font-mono uppercase text-[var(--text-muted)]">Active Subscriptions</span>
           <div className="text-2xl font-black text-emerald-400 flex items-center gap-2">
-            {Object.values(metrics?.activeSubscriptions || {}).reduce((a, b) => a + b, 0)}
+            {Object.values(metrics?.activeSubscriptions || {}).reduce<number>((a, b) => a + Number(b), 0)}
             <CreditCard size={18} />
           </div>
           <p className="text-[11px] text-[var(--text-secondary)]">Paying SaaS subscribers</p>

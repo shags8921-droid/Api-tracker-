@@ -28,7 +28,7 @@ export interface AcceptanceTestItem {
   criterion: string;
   expectedResult: string;
   actualResult: string;
-  status: 'PASS' | 'FAIL' | 'BLOCKED';
+  status: 'PASS' | 'FAIL' | 'BLOCKED' | 'UNVERIFIED';
   evidence: string;
 }
 
@@ -71,7 +71,7 @@ export const LaunchReadinessScreen: React.FC = () => {
       criterion: 'User can open the application',
       expectedResult: 'Fast first contentful paint (<1.2s), responsive viewport, dark/light theme initialized.',
       actualResult: 'Clean mount in browser with Zero runtime errors across mobile & desktop.',
-      status: 'PASS',
+      status: 'UNVERIFIED',
       evidence: 'Vite React production bundle index-BBmjsBhN.js initialized successfully.'
     },
     {
@@ -80,7 +80,7 @@ export const LaunchReadinessScreen: React.FC = () => {
       criterion: 'User can enter the original website URL',
       expectedResult: 'Accepts valid enterprise hostname or localhost endpoint with input normalization.',
       actualResult: 'Input accepts and trims target website URLs with live protocol formatting.',
-      status: 'PASS',
+      status: 'UNVERIFIED',
       evidence: 'ConnectWebsiteScreen input updates active target state.'
     },
     {
@@ -89,7 +89,7 @@ export const LaunchReadinessScreen: React.FC = () => {
       criterion: 'Application validates the URL',
       expectedResult: 'Requires HTTPS protocol; blocks private IP SSRF ranges (e.g. 169.254.*) and malformed URLs.',
       actualResult: 'Client regex + backend URL validator reject untrusted origins with 400 Bad Request.',
-      status: 'PASS',
+      status: 'UNVERIFIED',
       evidence: 'Anti-SSRF test verified in QA Security Suite.'
     },
     {
@@ -98,7 +98,7 @@ export const LaunchReadinessScreen: React.FC = () => {
       criterion: 'User can authenticate securely',
       expectedResult: 'Supports OAuth 2.0 PKCE, session expiry handling, and token storage protection.',
       actualResult: 'Session token stored in memory/sessionStorage; never exposed in URL query parameters.',
-      status: 'PASS',
+      status: 'UNVERIFIED',
       evidence: 'WebAuthAdapter isolation active.'
     },
     {
@@ -107,7 +107,7 @@ export const LaunchReadinessScreen: React.FC = () => {
       criterion: 'Discovery engine analyses available capabilities',
       expectedResult: '11-stage pipeline inspects integration manifest, OpenAPI 3.0 spec, and API endpoints.',
       actualResult: 'Self-discovery engine maps pages, features, workflows, and OpenAPI schemas.',
-      status: 'PASS',
+      status: 'UNVERIFIED',
       evidence: 'WebsiteDiscoveryEngine verified 15 real features on demo.sitepulse.internal.'
     },
     {
@@ -116,7 +116,7 @@ export const LaunchReadinessScreen: React.FC = () => {
       criterion: 'Owner Hub and Manager Hub are identified correctly',
       expectedResult: 'Distinct hub categories with strict separation of executive vs operational roles.',
       actualResult: 'Discovered features correctly categorized into hub_owner vs hub_manager.',
-      status: 'PASS',
+      status: 'UNVERIFIED',
       evidence: 'OwnerHubScreen & ManagerHubScreen mount verified feature registries.'
     },
     {
@@ -125,7 +125,7 @@ export const LaunchReadinessScreen: React.FC = () => {
       criterion: 'Discovered features appear in application',
       expectedResult: 'Dynamic feature cards with status badges, interaction counts, and route paths.',
       actualResult: 'Features render with visual structure tokens, test tags, and action buttons.',
-      status: 'PASS',
+      status: 'UNVERIFIED',
       evidence: 'FeatureCard and DynamicFeatureRenderer render cards, tables, and forms.'
     },
     {
@@ -134,7 +134,7 @@ export const LaunchReadinessScreen: React.FC = () => {
       criterion: 'Native implementations work through real APIs',
       expectedResult: 'Direct REST communication with /api/v1/admin/users, /orders/feed, /catalog/items.',
       actualResult: 'Real-time JSON requests execute with latency calculation and error logging.',
-      status: 'PASS',
+      status: 'UNVERIFIED',
       evidence: 'Verified HTTP 200 responses on all 6 core business endpoints.'
     },
     {
@@ -143,7 +143,7 @@ export const LaunchReadinessScreen: React.FC = () => {
       criterion: 'WebView fallbacks work only on trusted origins',
       expectedResult: 'Untrusted external hosts blocked with Origin Violation alert; trusted origins render with token isolation.',
       actualResult: 'Strict regex whitelist permits only verified origin (e.g. demo.sitepulse.internal).',
-      status: 'PASS',
+      status: 'UNVERIFIED',
       evidence: 'SecureEmbeddedBrowser origin guard tested with mock untrusted URLs.'
     },
     {
@@ -153,7 +153,7 @@ export const LaunchReadinessScreen: React.FC = () => {
       expectedResult: 'Manager accounts receive HTTP 403 Forbidden on Owner admin routes.',
       actualResult: 'Backend middleware checkRolePermission enforced; UI hides and blocks access.',
       status: 'PASS',
-      evidence: 'Tested with X-User-Role: MANAGER hitting /api/v1/admin/users -> 403 Forbidden.'
+      evidence: 'Server test "manager cannot use owner routes" (web/server/test/server.test.js): Manager token on /admin/users, /backups/create, tenant export and payments -> 403.'
     },
     {
       id: 'at_11',
@@ -161,7 +161,7 @@ export const LaunchReadinessScreen: React.FC = () => {
       criterion: 'Data changes synchronise correctly',
       expectedResult: 'Authoritative remote website is updated; local offline actions queue with idempotency keys.',
       actualResult: 'SynchronisationEngine queues safe mutations offline and replays with backoff.',
-      status: 'PASS',
+      status: 'UNVERIFIED',
       evidence: 'SyncHistoryScreen displays live queue and conflict resolution actions.'
     },
     {
@@ -170,7 +170,7 @@ export const LaunchReadinessScreen: React.FC = () => {
       criterion: 'Network failures handled safely',
       expectedResult: 'No silent data loss; destructive actions refused offline; offline banner shown.',
       actualResult: 'Safe offline mode active; destructive actions trigger policy violation alert.',
-      status: 'PASS',
+      status: 'UNVERIFIED',
       evidence: 'Tested network disconnection and idempotent replay on restoration.'
     },
     {
@@ -179,7 +179,7 @@ export const LaunchReadinessScreen: React.FC = () => {
       criterion: 'Works on mobile and desktop',
       expectedResult: 'Responsive layout with mobile drawer, zero horizontal overflow, touch target >=48dp.',
       actualResult: 'Responsive CSS flex/grid layout; canonical views adapt cleanly across viewports.',
-      status: 'PASS',
+      status: 'UNVERIFIED',
       evidence: 'Tested on desktop viewport and simulated mobile portrait (360x640).'
     }
   ];
@@ -224,10 +224,10 @@ export const LaunchReadinessScreen: React.FC = () => {
         <div className="glass-panel p-4 border-l-4 border-emerald-500 space-y-1">
           <span className="text-[10px] font-mono uppercase text-[var(--text-muted)]">Acceptance Testing</span>
           <div className="text-2xl font-black text-emerald-400 flex items-center gap-2">
-            13 / 13 PASS
+            {acceptanceTests.filter((t) => t.status === 'PASS').length} / {acceptanceTests.length} VERIFIED
             <CheckCircle2 size={18} />
           </div>
-          <p className="text-[11px] text-[var(--text-secondary)]">100% criteria verified</p>
+          <p className="text-[11px] text-[var(--text-secondary)]">Remaining criteria are unverified (no automated evidence)</p>
         </div>
 
         <div className="glass-panel p-4 border-l-4 border-cyan-500 space-y-1">
@@ -362,10 +362,10 @@ export const LaunchReadinessScreen: React.FC = () => {
           <div className="p-4 border-b border-[var(--border-color)] flex items-center justify-between">
             <h3 className="font-bold text-sm text-[var(--text-primary)] flex items-center gap-2">
               <CheckCircle2 size={16} className="text-emerald-400" />
-              13-Point Real-World Acceptance Testing Matrix (All Passed)
+              13-Point Acceptance Matrix (only criteria with automated evidence are marked PASS)
             </h3>
             <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 px-2 py-1 rounded">
-              Pass Rate: 100%
+              Verified: {acceptanceTests.filter((t) => t.status === 'PASS').length} of {acceptanceTests.length}
             </span>
           </div>
 
@@ -376,7 +376,7 @@ export const LaunchReadinessScreen: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <span className="font-mono font-bold text-cyan-400">#{t.num}</span>
                     <h4 className="font-bold text-[var(--text-primary)]">{t.criterion}</h4>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-400">
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${t.status === 'PASS' ? 'bg-emerald-500/20 text-emerald-400' : t.status === 'UNVERIFIED' ? 'bg-amber-500/20 text-amber-400' : 'bg-rose-500/20 text-rose-400'}`}>
                       {t.status}
                     </span>
                   </div>

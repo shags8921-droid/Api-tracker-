@@ -5,7 +5,6 @@
  */
 
 import { api } from '../../services/api';
-import { syncEngine } from '../sync/engine';
 import { ChangeDetectionEngine } from '../change/detection';
 import { DiscoveredFeature, FeatureStatus } from '../../types';
 
@@ -39,39 +38,12 @@ export class ProductionQualityAssuranceRunner {
     // ==========================================
     // 1. UNIT TESTS
     // ==========================================
-    // Test 1.1: Authentication Session Validity
-    const u1Start = Date.now();
-    const token = 'valid_session_jwt_mock';
-    const isTokenValid = token.length > 10;
-    results.push({
-      id: 'unit_1',
-      category: 'UNIT',
-      name: 'Authentication Token Session Integrity',
-      description: 'Verifies authorization bearer token schema and non-empty payload integrity.',
-      passed: isTokenValid,
-      durationMs: Date.now() - u1Start,
-      details: 'JWT session tokens pass structure format constraints.'
-    });
-
-    // Test 1.2: Role Hierarchy Evaluation
-    const u2Start = Date.now();
-    const ownerCanDoOps = true;
-    const mgrCannotDoOwnerAdmin = true;
-    results.push({
-      id: 'unit_2',
-      category: 'UNIT',
-      name: 'RBAC Permission Scopes Hierarchy',
-      description: 'Verifies Owner possesses all scopes and Manager is strictly restricted from admin endpoints.',
-      passed: ownerCanDoOps && mgrCannotDoOwnerAdmin,
-      durationMs: Date.now() - u2Start,
-      details: 'RBAC role isolation verified: Owner hierarchy encompasses manager operations.'
-    });
-
     // Test 1.3: Change Detection Diff Engine
     const u3Start = Date.now();
     const changeEngine = new ChangeDetectionEngine();
     const diff = changeEngine.compareSnapshots(features.slice(1), features, 'v2.3.0', 'v2.4.0');
-    const changeEngineWorks = diff.addedFeatures.length >= 0;
+    // Real assertion: dropping exactly one feature from the old snapshot must surface exactly one addition.
+    const changeEngineWorks = features.length === 0 ? false : diff.addedFeatures.length === 1;
     results.push({
       id: 'unit_3',
       category: 'UNIT',
@@ -79,20 +51,9 @@ export class ProductionQualityAssuranceRunner {
       description: 'Tests delta calculation between consecutive manifest discovery versions.',
       passed: changeEngineWorks,
       durationMs: Date.now() - u3Start,
-      details: `Diff engine detected ${diff.addedFeatures.length} delta additions without regression.`
-    });
-
-    // Test 1.4: Safe Offline Queue Idempotency
-    const u4Start = Date.now();
-    const qCountBefore = syncEngine.getQueue().length;
-    results.push({
-      id: 'unit_4',
-      category: 'UNIT',
-      name: 'Offline Idempotent Sync Queue Guard',
-      description: 'Verifies destructive actions are rejected when network is absent.',
-      passed: true,
-      durationMs: Date.now() - u4Start,
-      details: 'Safety guard verified: destructive commands trigger Policy Violation exceptions.'
+      details: features.length === 0
+        ? 'No discovered features available to diff; run discovery first.'
+        : `Expected 1 added feature, diff engine reported ${diff.addedFeatures.length}.`
     });
 
     // ==========================================
@@ -164,66 +125,49 @@ export class ProductionQualityAssuranceRunner {
     // ==========================================
     // 3. SECURITY TESTS
     // ==========================================
-    // Test 3.1: Manager Role Access Restriction (403 Enforcement)
+    // Test 3.1: Unauthenticated access is rejected by the server (real request without credentials)
     const s1Start = Date.now();
-    let rbac403Passed = false;
-    let rbacDetails = '';
-    const originalRole = api.getUserRole();
+    let unauthPassed = false;
+    let unauthDetails = '';
     try {
-      api.setUserRole('MANAGER');
-      await api.get('/api/v1/admin/users');
-      rbacDetails = 'Security Breach: Manager was permitted access to Owner directory!';
-      rbac403Passed = false;
-    } catch (err: any) {
-      if (err.status === 403 || err.message.includes('403') || err.message.includes('Forbidden')) {
-        rbac403Passed = true;
-        rbacDetails = 'Verified: Server returned 403 Forbidden when Manager accessed /api/v1/admin/users.';
-      } else {
-        rbacDetails = `Unexpected response: ${err.message}`;
-      }
-    } finally {
-      api.setUserRole(originalRole);
+      const r = await fetch('/api/v1/admin/users');
+      unauthPassed = r.status === 401;
+      unauthDetails = `GET /api/v1/admin/users without a token returned HTTP ${r.status} (expected 401).`;
+    } catch (e: any) {
+      unauthDetails = `Request failed: ${e.message}`;
     }
     results.push({
       id: 'sec_1',
       category: 'SECURITY',
-      name: 'Server-Side RBAC 403 Forbidden Enforcement',
-      description: 'Validates that hiding UI buttons is NOT the sole defense; backend strictly rejects unauthorized roles.',
-      passed: rbac403Passed,
+      name: 'Unauthenticated Request Rejection',
+      description: 'Sends a real request with no credentials to an owner-only endpoint.',
+      passed: unauthPassed,
       durationMs: Date.now() - s1Start,
-      details: rbacDetails
+      details: unauthDetails
     });
 
-    // Test 3.2: SSRF & Origin Restriction Guard
-    const s2Start = Date.now();
-    const untrustedOrigins = ['http://evil-attacker.com', 'http://169.254.169.254/metadata', 'file:///etc/passwd'];
-    const originSanitized = untrustedOrigins.every(
-      (url) => !url.startsWith('https://') || url.includes('169.254') || url.includes('evil')
-    );
-    results.push({
-      id: 'sec_2',
-      category: 'SECURITY',
-      name: 'SSRF & Malicious Host Origin Sanitization',
-      description: 'Ensures connections are restricted exclusively to verified HTTPS enterprise origins.',
-      passed: originSanitized,
-      durationMs: Date.now() - s2Start,
-      details: 'Strict regex whitelist prevents internal IP probing or unauthorized domain redirection.'
-    });
-
-    // Test 3.3: Credential Redaction in Audit & Storage
-    const s3Start = Date.now();
-    const sensitiveLog = { token: 'secret_jwt_xyz', secret: 'whsec_9948', password: 'plain_pass' };
-    const sanitized = JSON.stringify(sensitiveLog).replace(/(token|secret|password)":"[^"]+"/gi, '$1":"[REDACTED]"');
-    const isRedacted = !sanitized.includes('secret_jwt_xyz') && sanitized.includes('[REDACTED]');
-    results.push({
-      id: 'sec_3',
-      category: 'SECURITY',
-      name: 'Credential Redaction & Leakage Prevention',
-      description: 'Checks that tokens, secrets, and credentials never enter client logs or browser storage.',
-      passed: isRedacted,
-      durationMs: Date.now() - s3Start,
-      details: 'Automatic redaction pipeline sanitized 100% of sensitive key vectors.'
-    });
+    // Test 3.2: Role enforcement (only meaningful when signed in as MANAGER)
+    if (api.getUserRole() === 'MANAGER') {
+      const s2Start = Date.now();
+      let mgrPassed = false;
+      let mgrDetails = '';
+      try {
+        await api.get('/api/v1/admin/users');
+        mgrDetails = 'Security failure: a Manager session could read the owner team directory.';
+      } catch (err: any) {
+        mgrPassed = err.status === 403;
+        mgrDetails = `Manager session received HTTP ${err.status} on /api/v1/admin/users (expected 403).`;
+      }
+      results.push({
+        id: 'sec_2',
+        category: 'SECURITY',
+        name: 'Manager Role Forbidden From Owner Routes',
+        description: 'Uses the real signed-in Manager session against an owner-only endpoint.',
+        passed: mgrPassed,
+        durationMs: Date.now() - s2Start,
+        details: mgrDetails
+      });
+    }
 
     // ==========================================
     // 4. END-TO-END TESTS
@@ -255,16 +199,16 @@ export class ProductionQualityAssuranceRunner {
     let hookDetails = '';
     try {
       const wRes = await api.get<any[]>('/api/v1/integrations/webhooks');
-      hookPassed = Array.isArray(wRes.data) && wRes.data.length > 0;
-      hookDetails = `Found ${wRes.data.length} registered webhooks dispatching active sync triggers.`;
+      hookPassed = Array.isArray(wRes.data);
+      hookDetails = `Webhook registry readable (${wRes.data.length} registered). Outbound delivery is NOT implemented, so no dispatch was tested.`;
     } catch (e: any) {
       hookDetails = e.message;
     }
     results.push({
       id: 'e2e_2',
       category: 'E2E',
-      name: 'Enterprise Webhook Dispatch Synchronization',
-      description: 'Ensures real-time push webhooks operate alongside fallback polling cycles.',
+      name: 'Webhook Registry Read (delivery not tested)',
+      description: 'Checks only that the webhook registry endpoint responds for this tenant.',
       passed: hookPassed,
       durationMs: Date.now() - e2Start,
       details: hookDetails
@@ -282,6 +226,10 @@ export class ProductionQualityAssuranceRunner {
       coveragePct,
       results,
       knownLimitations: [
+        'This is a smoke suite of a few live checks, not full coverage. Server-side tests live in web/server/test.',
+        'Website discovery is simulated; no real target site is scanned yet',
+        'No real AI model or payment gateway is connected by default; payments fail closed until a gateway verifier is configured',
+        'Outbound webhook delivery and email are not implemented',
         'Multi-region high-availability failover requires enterprise cloud load balancer',
         'SOAP/XML legacy endpoints are marked as UNAVAILABLE and not supported',
         'Financial transactions are restricted to read-only reporting unless authenticated with multi-factor tokens'
@@ -291,7 +239,8 @@ export class ProductionQualityAssuranceRunner {
         'Arbitrary shell script execution from web clients'
       ],
       securityAuditsPassed: results.filter((r) => r.category === 'SECURITY').every((r) => r.passed),
-      overallAssessment: failedCount === 0 ? 'PRODUCTION_READY' : 'CONDITIONAL_APPROVAL'
+      // These checks are a small smoke suite; they can never establish production readiness on their own.
+      overallAssessment: failedCount === 0 ? 'CONDITIONAL_APPROVAL' : 'REJECTED'
     };
   }
 }

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { api } from '../services/api';
 import {
   CreditCard,
   Check,
@@ -46,7 +47,7 @@ export const PricingAndBillingScreen: React.FC<Props> = ({
   const [selectedPlanForCheckout, setSelectedPlanForCheckout] = useState<PricingPlanConfig | null>(null);
   const [selectedGateway, setSelectedGateway] = useState<PaymentGatewayType>('ESEWA');
   const [initiatingPayment, setInitiatingPayment] = useState<boolean>(false);
-  const [pendingTx, setPendingTx] = useState<{ transactionId: string; invoiceNumber: string; amount: number; currency: string } | null>(null);
+  const [pendingTx, setPendingTx] = useState<{ transactionId: string; invoiceNumber: string | null; amount: number; currency: string } | null>(null);
   const [gatewayRefInput, setGatewayRefInput] = useState<string>('');
   const [verifyingPayment, setVerifyingPayment] = useState<boolean>(false);
   const [verificationSuccess, setVerificationSuccess] = useState<string | null>(null);
@@ -63,11 +64,8 @@ export const PricingAndBillingScreen: React.FC<Props> = ({
   const fetchPlans = async () => {
     setLoadingPlans(true);
     try {
-      const res = await fetch('/api/v1/commercial/plans');
-      if (res.ok) {
-        const data = await res.json();
-        setPlans(data.plans || []);
-      }
+      const { data } = await api.get<PricingPlanConfig[] | { plans: PricingPlanConfig[] }>('/api/v1/commercial/plans');
+      setPlans(Array.isArray(data) ? data : data.plans || []);
     } catch (err) {
       console.error('Failed to fetch pricing plans:', err);
     } finally {
@@ -78,11 +76,8 @@ export const PricingAndBillingScreen: React.FC<Props> = ({
   const fetchHistory = async () => {
     setLoadingHistory(true);
     try {
-      const res = await fetch(`/api/v1/commercial/payments/history?orgId=${encodeURIComponent(currentOrgId)}`);
-      if (res.ok) {
-        const data = await res.json();
-        setPaymentHistory(data.transactions || []);
-      }
+      const { data } = await api.get<PaymentTransactionRecord[]>('/api/v1/commercial/payments/history');
+      setPaymentHistory(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error('Failed to fetch transaction history:', err);
     } finally {
@@ -114,34 +109,21 @@ export const PricingAndBillingScreen: React.FC<Props> = ({
     setInitiatingPayment(true);
     setErrorMsg(null);
     try {
-      const res = await fetch('/api/v1/commercial/payments/initiate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          orgId: currentOrgId,
-          planId: selectedPlanForCheckout.id,
-          currency,
-          billingCycle,
-          gateway: selectedGateway
-        })
+      const { data } = await api.post<{ transactionId: string; invoiceNumber: string | null; amount: number; currency: string; simulated: boolean }>(
+        '/api/v1/commercial/payments/initiate',
+        { planId: selectedPlanForCheckout.id, currency, billingCycle, gateway: selectedGateway },
+        { 'Idempotency-Key': api.newIdempotencyKey() }
+      );
+      setPendingTx({
+        transactionId: data.transactionId,
+        invoiceNumber: data.invoiceNumber,
+        amount: data.amount,
+        currency: data.currency
       });
-
-      if (res.ok) {
-        const data = await res.json();
-        setPendingTx({
-          transactionId: data.transactionId,
-          invoiceNumber: data.invoiceNumber,
-          amount: data.amount,
-          currency: data.currency
-        });
-        // Pre-fill simulated gateway reference for frictionless testing
-        setGatewayRefInput(`${selectedGateway.toLowerCase()}_ref_${Math.floor(100000 + Math.random() * 900000)}`);
-      } else {
-        const err = await res.json();
-        setErrorMsg(err.error || 'Failed to initiate payment transaction');
-      }
+      // The gateway reference must come from the real gateway receipt; it is never auto-filled.
+      setGatewayRefInput('');
     } catch (err: any) {
-      setErrorMsg(err.message || 'Network error initiating checkout');
+      setErrorMsg(err.message || 'Failed to initiate payment');
     } finally {
       setInitiatingPayment(false);
     }
@@ -152,35 +134,21 @@ export const PricingAndBillingScreen: React.FC<Props> = ({
     setVerifyingPayment(true);
     setErrorMsg(null);
     try {
-      const res = await fetch('/api/v1/commercial/payments/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          transactionId: pendingTx.transactionId,
-          gatewayRefId: gatewayRefInput.trim(),
-          gateway: selectedGateway
-        })
+      const { data } = await api.post<{ invoiceNumber: string }>('/api/v1/commercial/payments/verify', {
+        transactionId: pendingTx.transactionId,
+        gatewayRefId: gatewayRefInput.trim()
       });
-
-      if (res.ok) {
-        const data = await res.json();
-        setVerificationSuccess(
-          `Payment verified! Upgraded organization to ${selectedPlanForCheckout?.name}. Invoice: ${data.invoiceNumber}`
-        );
-        fetchHistory();
-        if (onUpgradeSuccess && selectedPlanForCheckout) {
-          onUpgradeSuccess(selectedPlanForCheckout.tier);
-        }
-        setTimeout(() => {
-          setSelectedPlanForCheckout(null);
-          setPendingTx(null);
-        }, 3000);
-      } else {
-        const err = await res.json();
-        setErrorMsg(err.error || 'Payment verification failed on server');
+      setVerificationSuccess(`Payment verified! Upgraded organization to ${selectedPlanForCheckout?.name}. Invoice: ${data.invoiceNumber}`);
+      fetchHistory();
+      if (onUpgradeSuccess && selectedPlanForCheckout) {
+        onUpgradeSuccess(selectedPlanForCheckout.tier);
       }
+      setTimeout(() => {
+        setSelectedPlanForCheckout(null);
+        setPendingTx(null);
+      }, 3000);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Payment verification network error');
+      setErrorMsg(err.message || 'Payment verification failed');
     } finally {
       setVerifyingPayment(false);
     }
@@ -190,22 +158,18 @@ export const PricingAndBillingScreen: React.FC<Props> = ({
     setExportingData(true);
     setExportNotice(null);
     try {
-      const res = await fetch(`/api/v1/commercial/tenant/export?orgId=${encodeURIComponent(currentOrgId)}`);
-      if (res.ok) {
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `SitePulse_Archive_${currentOrgId}_${Date.now()}.json`;
-        a.click();
-        URL.revokeObjectURL(url);
-        setExportNotice('Complete workspace data archive downloaded successfully!');
-        setTimeout(() => setExportNotice(null), 5000);
-      } else {
-        setExportNotice('Error generating export archive. Please retry.');
-      }
+      const { data } = await api.get<unknown>('/api/v1/commercial/tenant/export');
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `SitePulse_Archive_${currentOrgId}_${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setExportNotice('Complete workspace data archive downloaded successfully!');
+      setTimeout(() => setExportNotice(null), 5000);
     } catch (err: any) {
-      setExportNotice('Failed to download tenant archive.');
+      setExportNotice(err?.message || 'Failed to download tenant archive.');
     } finally {
       setExportingData(false);
     }
@@ -463,7 +427,7 @@ export const PricingAndBillingScreen: React.FC<Props> = ({
               <tbody className="divide-y divide-[var(--border-color)]">
                 {paymentHistory.map(tx => (
                   <tr key={tx.transactionId} className="hover:bg-slate-900/40 font-mono text-slate-300">
-                    <td className="py-2 text-white font-bold">{tx.invoiceNumber}</td>
+                    <td className="py-2 text-white font-bold">{tx.invoiceNumber || '—'}</td>
                     <td className="py-2 text-slate-400">{new Date(tx.createdAt).toLocaleDateString()}</td>
                     <td className="py-2 uppercase text-cyan-400">{tx.planId}</td>
                     <td className="py-2">{tx.gateway}</td>
@@ -643,7 +607,7 @@ export const PricingAndBillingScreen: React.FC<Props> = ({
                 ) : (
                   <div className="p-3 bg-cyan-500/10 border border-cyan-500/30 rounded-xl space-y-3">
                     <div className="flex items-center justify-between text-[11px] font-mono">
-                      <span className="text-slate-400">Invoice: {pendingTx.invoiceNumber}</span>
+                      <span className="text-slate-400">Invoice: {pendingTx.invoiceNumber || 'issued after verification'}</span>
                       <span className="text-cyan-400 font-bold">Transaction: {pendingTx.transactionId}</span>
                     </div>
 
