@@ -123,7 +123,7 @@ export const OwnerHubScreen: React.FC<Props> = ({
         secret: webhookSecret || undefined
       });
       setOneTimeNotice(
-        `Webhook registered. Signing secret (shown only once): ${data.secret}. Note: outbound event delivery is not implemented yet.`
+        `Webhook registered. Signing secret (shown only once): ${data.secret}. Events are signed with HMAC-SHA256 (X-SitePulse-Signature) and retried up to 3 times.`
       );
       setShowWebhookModal(false);
       setWebhookUrl('');

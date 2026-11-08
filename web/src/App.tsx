@@ -164,7 +164,18 @@ const AppShell: React.FC<{ user: SessionUser; onSignOut: () => void }> = ({ user
           status: 'SUCCESS'
         }
       ]);
-      setAuditLogs(storedLogs);
+      let merged = storedLogs;
+      try {
+        // Server-side history is the source of truth (survives refresh/device change); local entries are kept as a cache.
+        const { data: serverLogs } = await api.get<AuditLogEntry[]>('/api/v1/audit');
+        if (Array.isArray(serverLogs)) {
+          const ids = new Set(serverLogs.map((l) => l.id));
+          merged = [...serverLogs, ...storedLogs.filter((l) => !ids.has(l.id) && l.id !== 'audit_init')].sort((a, b) => b.timestamp - a.timestamp);
+        }
+      } catch {
+        /* offline: fall back to the local cache */
+      }
+      setAuditLogs(merged);
     }
     loadData();
   }, []);
@@ -198,6 +209,8 @@ const AppShell: React.FC<{ user: SessionUser; onSignOut: () => void }> = ({ user
     const updated = [entry, ...auditLogs];
     setAuditLogs(updated);
     await Storage.setItem('audit_logs', updated);
+    // Persist server-side too; the server attributes the entry to the signed-in user and redacts secrets.
+    api.post('/api/v1/audit', { category, title, details, status, websiteId: entry.websiteId }).catch(() => {});
   };
 
   const addRecentFeature = (feat: DiscoveredFeature) => {

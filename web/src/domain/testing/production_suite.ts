@@ -200,7 +200,7 @@ export class ProductionQualityAssuranceRunner {
     try {
       const wRes = await api.get<any[]>('/api/v1/integrations/webhooks');
       hookPassed = Array.isArray(wRes.data);
-      hookDetails = `Webhook registry readable (${wRes.data.length} registered). Outbound delivery is NOT implemented, so no dispatch was tested.`;
+      hookDetails = `Webhook registry readable (${wRes.data.length} registered). Delivery is covered by server tests, not this smoke check.`;
     } catch (e: any) {
       hookDetails = e.message;
     }
@@ -229,7 +229,7 @@ export class ProductionQualityAssuranceRunner {
         'This is a smoke suite of a few live checks, not full coverage. Server-side tests live in web/server/test.',
         'Website discovery is simulated; no real target site is scanned yet',
         'No real AI model or payment gateway is connected by default; payments fail closed until a gateway verifier is configured',
-        'Outbound webhook delivery and email are not implemented',
+        'Email delivery is not implemented (the outbox only queues records)',
         'Multi-region high-availability failover requires enterprise cloud load balancer',
         'SOAP/XML legacy endpoints are marked as UNAVAILABLE and not supported',
         'Financial transactions are restricted to read-only reporting unless authenticated with multi-factor tokens'

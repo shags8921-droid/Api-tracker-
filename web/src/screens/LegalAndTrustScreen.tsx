@@ -39,7 +39,7 @@ export const LegalAndTrustScreen: React.FC = () => {
         },
         {
           heading: '4. Service Availability & SLA',
-          body: 'We commit to 99.9% uptime for the SitePulse AI orchestration plane. Scheduled maintenance windows will be announced at least 48 hours in advance through the in-app notification center.'
+          body: 'We aim to keep the service available but do not currently offer a contractual uptime guarantee. [Placeholder: any uptime commitment must be reviewed and approved by the business owner and qualified counsel before publication.]'
         }
       ]
     },
@@ -47,7 +47,7 @@ export const LegalAndTrustScreen: React.FC = () => {
       slug: 'privacy',
       title: 'Privacy Policy & GDPR Data Protection',
       lastUpdated: 'November 2026',
-      summary: 'How SitePulse AI collects, processes, encrypts, and isolates customer data in compliance with GDPR, CCPA, and international security standards.',
+      summary: 'How SitePulse AI collects, processes, encrypts, and isolates customer data with data-protection principles (such as those in GDPR and CCPA) in mind. This is not a compliance certification. [Placeholder: legal review required.]',
       sections: [
         {
           heading: '1. Data We Collect and Process',
@@ -99,7 +99,7 @@ export const LegalAndTrustScreen: React.FC = () => {
         },
         {
           heading: '2. Strict Server-Side Payment Verification',
-          body: 'We strictly reject client-side payment assertions. Every transaction initiated through eSewa, Khalti, Fonepay, or Stripe is cryptographically validated via backend webhooks and gateway reference APIs before subscription limits are provisioned.'
+          body: 'We strictly reject client-side payment assertions. Subscription limits are provisioned only after the backend verifies a payment with the payment gateway; client-side payment claims are never trusted. Gateway connections are enabled per deployment.'
         },
         {
           heading: '3. Idempotent Writeback Protection',

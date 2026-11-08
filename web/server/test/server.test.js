@@ -341,3 +341,118 @@ test('client-reported audit entries use the session identity and are redacted', 
   assert.ok(!r.body.details.includes('hunter22'));
   assert.equal(r.body.category, 'FEATURE_CHANGE');
 });
+
+test('P0 D-1/D-2: leftover temp file from a crash is ignored; emptied collections are NOT re-seeded', async () => {
+  const h = boot({ demo: true, demoPassword: 'Demo-Passw0rd!' });
+  fs.writeFileSync(path.join(h.dataDir, 'database.json.tmp-999'), '{ half written');
+  h.db.orders.length = 0; h.db.webhooks.length = 0;
+  h.store.save();
+  const again = createApp({ express: createShim(), dataDir: h.dataDir, authSecret: SECRET, logger: silent, demo: true, demoPassword: 'Demo-Passw0rd!' });
+  assert.equal(again.db.orders.length, 0, 'deleted orders must stay deleted');
+  assert.equal(again.db.users.length, 2, 'users not duplicated by re-seed');
+});
+
+test('P0 S-3: tenant export and webhook listing never contain signing secrets or password hashes', async () => {
+  const h = boot({ allowSimulatedPayments: true });
+  const a = await register(h, 'a@ex.com');
+  const init = await h.call('POST', '/commercial/payments/initiate', { token: a.token, body: { planId: 'plan_starter', gateway: 'KHALTI' } });
+  await h.call('POST', '/commercial/payments/verify', { token: a.token, body: { transactionId: init.body.transactionId } });
+  const w = await h.call('POST', '/integrations/webhooks', { token: a.token, body: { url: 'https://hooks.example.com/x' } });
+  const exp = JSON.stringify((await h.call('GET', '/commercial/tenant/export', { token: a.token })).body);
+  assert.ok(!exp.includes(w.body.secret) && !exp.includes('scrypt$') && !exp.includes('secretEnc'));
+});
+
+test('P0 S-2/B-3: registration cannot choose a paid tier; client cannot self-upgrade via any route', async () => {
+  const h = boot();
+  const r = await h.call('POST', '/auth/register', { body: { orgName: 'Cheat Co', email: 'c@ex.com', password: PW, tier: 'BUSINESS', subscription: { tier: 'BUSINESS', status: 'ACTIVE' } } });
+  assert.equal(r.body.organisation.subscription.tier, 'FREE');
+  assert.equal((await h.call('POST', '/saas/organisations/register', { token: r.body.token, body: { name: 'X', tier: 'BUSINESS' } })).status, 403);
+  assert.equal(h.db.organisations[0].subscription.tier, 'FREE');
+});
+
+import { createGeminiClient } from '../lib/ai.js';
+
+test('AI: model used for free-form prompts, key in header not URL, managers never get revenue in grounding, failures fall back', async () => {
+  const calls = [];
+  let mode = 'ok';
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    if (mode === 'down') throw new Error('network down');
+    if (mode === 'http500') return { ok: false, status: 500 };
+    return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: ' Model says hi ' }] } }] }) };
+  };
+  const aiClient = createGeminiClient({ apiKey: 'KEY-123', fetchImpl });
+  const h = boot({ aiClient, demo: true, demoPassword: 'Demo-Passw0rd!' });
+  const mgr = (await h.call('POST', '/auth/login', { body: { email: 'manager@demo.sitepulse.local', password: 'Demo-Passw0rd!' } })).body.token;
+  const own = (await h.call('POST', '/auth/login', { body: { email: 'owner@demo.sitepulse.local', password: 'Demo-Passw0rd!' } })).body.token;
+
+  const r = await h.call('POST', '/ai/chat', { token: mgr, body: { prompt: 'how are things looking?' } });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.responseText, 'Model says hi');
+  assert.match(r.body.engine, /gemini/);
+  assert.ok(!calls[0].url.includes('KEY-123'), 'api key must not be in the URL');
+  assert.equal(calls[0].init.headers['x-goog-api-key'], 'KEY-123');
+  const mgrSystem = JSON.parse(calls[0].init.body).systemInstruction.parts[0].text;
+  assert.ok(!/Revenue|Team members/.test(mgrSystem), 'manager grounding must exclude revenue/team data');
+  await h.call('POST', '/ai/chat', { token: own, body: { prompt: 'how are things looking?' } });
+  assert.match(JSON.parse(calls[1].init.body).systemInstruction.parts[0].text, /Revenue/);
+  // financial intent still blocked for manager regardless of model
+  assert.equal((await h.call('POST', '/ai/chat', { token: mgr, body: { prompt: 'show revenue' } })).status, 403);
+
+  for (mode of ['down', 'http500']) {
+    const f = await h.call('POST', '/ai/chat', { token: mgr, body: { prompt: 'how are things looking?' } });
+    assert.equal(f.status, 200);
+    assert.match(f.body.responseText, /unavailable/);
+    assert.match(f.body.engine, /unavailable/);
+  }
+});
+
+import { signPayload, safePost } from '../lib/webhooks.js';
+
+async function proPlan(h, a) {
+  const init = await h.call('POST', '/commercial/payments/initiate', { token: a.token, body: { planId: 'plan_starter', gateway: 'KHALTI' } });
+  await h.call('POST', '/commercial/payments/verify', { token: a.token, body: { transactionId: init.body.transactionId } });
+}
+
+test('webhooks: signed delivery, retry on 5xx, no retry on 4xx, failures never block the request, cross-tenant isolation', async () => {
+  const sent = [];
+  let respond = () => ({ ok: true, status: 200 });
+  const webhookPost = async (url, headers, body) => { sent.push({ url, headers, body }); return respond(); };
+  const h = boot({ allowSimulatedPayments: true, webhookPost, webhookDelaysMs: [0, 0, 0] });
+  const a = await register(h, 'a@ex.com');
+  const b = await register(h, 'b@ex.com');
+  await proPlan(h, a); await proPlan(h, b);
+  const hookA = await h.call('POST', '/integrations/webhooks', { token: a.token, body: { url: 'https://hooks.example.com/a', events: ['catalog.stock_low'] } });
+  await h.call('POST', '/integrations/webhooks', { token: b.token, body: { url: 'https://hooks.example.com/b', events: ['catalog.stock_low'] } });
+  const item = (await h.call('POST', '/catalog/items', { token: a.token, body: { name: 'W', sku: 'S1', price: 5, stock: 50, minThreshold: 5 } })).body;
+
+  assert.equal((await h.call('PATCH', `/catalog/items/${item.id}/stock`, { token: a.token, body: { stock: 2 } })).status, 200);
+  await h.drainWebhooks();
+  assert.equal(sent.length, 1, 'only tenant A endpoint receives tenant A event');
+  assert.equal(sent[0].url, 'https://hooks.example.com/a');
+  const m = /^t=(\d+),v1=([0-9a-f]{64})$/.exec(sent[0].headers['X-SitePulse-Signature']);
+  assert.ok(m);
+  assert.equal(m[2], signPayload(hookA.body.secret, m[1], sent[0].body), 'receiver can verify HMAC with the shown secret');
+  assert.equal(JSON.parse(sent[0].body).data.sku, 'S1');
+
+  sent.length = 0; respond = () => ({ ok: false, status: 503 });
+  const t0 = await h.call('PATCH', `/catalog/items/${item.id}/stock`, { token: a.token, body: { stock: 1 } });
+  assert.equal(t0.status, 200, 'endpoint failure must not fail the user request');
+  await h.drainWebhooks();
+  assert.equal(sent.length, 4, '1 attempt + 3 retries on 5xx');
+  assert.equal(h.db.webhookDeliveries[0].ok, false);
+
+  sent.length = 0; respond = () => ({ ok: false, status: 404 });
+  await h.call('PATCH', `/catalog/items/${item.id}/stock`, { token: a.token, body: { stock: 0 } });
+  await h.drainWebhooks();
+  assert.equal(sent.length, 1, 'no retry on 404');
+  const log = await h.call('GET', '/integrations/webhooks/deliveries', { token: a.token });
+  assert.equal(log.body.length, 3);
+  assert.equal((await h.call('GET', '/integrations/webhooks/deliveries', { token: b.token })).body.length, 0);
+});
+
+test('webhooks: real safePost refuses private targets at connect time', async () => {
+  const r = await safePost('https://localhost:9/x', {}, '{}');
+  assert.equal(r.ok, false);
+  assert.match(r.error, /Blocked: private address/);
+});

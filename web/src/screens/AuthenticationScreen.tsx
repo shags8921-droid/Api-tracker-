@@ -40,21 +40,18 @@ export const AuthenticationScreen: React.FC<Props> = ({
     codeVerifier: string;
     codeChallenge: string;
     expiresInSeconds: number;
-  } | null>({
-    codeVerifier: 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk',
-    codeChallenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
-    expiresInSeconds: 3540
-  });
+  } | null>(null);
 
   const handleSimulatePkce = async () => {
     setIsPkceExchanging(true);
-    await new Promise((r) => setTimeout(r, 600));
-    setAuthToken('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.pkce_session_token_' + Date.now().toString(36));
-    setPkceDetails({
-      codeVerifier: 'rf_verifier_' + Math.random().toString(36).substring(2, 14),
-      codeChallenge: 'rf_challenge_' + Math.random().toString(36).substring(2, 14),
-      expiresInSeconds: 3600
-    });
+    // Real PKCE verifier/challenge generation (RFC 7636, S256). There is no authorization server to exchange
+    // the code with in this build, so NO access token is issued: paste a real token below instead.
+    const bytes = crypto.getRandomValues(new Uint8Array(32));
+    const b64u = (buf: ArrayBuffer | Uint8Array) =>
+      btoa(String.fromCharCode(...new Uint8Array(buf as ArrayBuffer))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const verifier = b64u(bytes);
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+    setPkceDetails({ codeVerifier: verifier, codeChallenge: b64u(digest), expiresInSeconds: 600 });
     setIsPkceExchanging(false);
   };
 
@@ -66,7 +63,7 @@ export const AuthenticationScreen: React.FC<Props> = ({
           Secure Authorized Authentication (PKCE & Scoped Tokens)
         </h2>
         <p className="text-xs text-[var(--text-secondary)] mt-1">
-          Target host: <span className="font-mono text-cyan-400">{targetUrl}</span>. Tokens are encrypted client-side and never logged in plain text.
+          Target host: <span className="font-mono text-cyan-400">{targetUrl}</span>. Credentials you enter here are kept in this browser session only and are sent to the target host during discovery; they are not stored by SitePulse.
         </p>
       </div>
 
@@ -147,7 +144,7 @@ export const AuthenticationScreen: React.FC<Props> = ({
                 className="btn-secondary px-3 py-1 text-xs"
               >
                 {isPkceExchanging ? <RefreshCw size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-                Refresh Session Token
+                Generate PKCE verifier & challenge
               </button>
             </div>
 
@@ -155,9 +152,9 @@ export const AuthenticationScreen: React.FC<Props> = ({
               <div className="space-y-1.5 text-[11px] font-mono text-[var(--text-muted)]">
                 <div>Code Challenge: <span className="text-[var(--text-primary)]">{pkceDetails.codeChallenge}</span></div>
                 <div>Code Verifier: <span className="text-[var(--text-secondary)]">{showToken ? pkceDetails.codeVerifier : '••••••••••••••••••••••••'}</span></div>
-                <div className="flex items-center gap-2 text-emerald-400 pt-1">
+                <div className="flex items-center gap-2 text-amber-400 pt-1">
                   <Clock size={12} />
-                  <span>Session valid for 59 mins (expires in {pkceDetails.expiresInSeconds}s)</span>
+                  <span>Generated locally. No authorization server is connected, so no access token is issued; use a token/API key option for live discovery.</span>
                 </div>
               </div>
             )}

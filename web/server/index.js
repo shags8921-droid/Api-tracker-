@@ -11,6 +11,8 @@
  *   PLATFORM_ADMIN_EMAILS      comma-separated emails allowed to view platform-wide metrics
  *   ENABLE_DEMO_SEED=1         seed demo data + accounts (refused in production)
  *   DEMO_PASSWORD              password for demo accounts (random and logged once if unset)
+ *   GEMINI_API_KEY             optional; enables model-backed assistant answers (falls back to rule-based)
+ *   GEMINI_MODEL               optional model id (default gemini-2.5-flash)
  *   ALLOW_SIMULATED_PAYMENTS=1 allow fake payments for local development (refused in production)
  */
 import path from 'node:path';
@@ -51,7 +53,9 @@ try {
     demoPassword: env.DEMO_PASSWORD || null,
     allowSimulatedPayments: flag(env.ALLOW_SIMULATED_PAYMENTS),
     platformAdminEmails: list(env.PLATFORM_ADMIN_EMAILS),
-    trustProxy
+    trustProxy,
+    geminiApiKey: env.GEMINI_API_KEY || null,
+    geminiModel: env.GEMINI_MODEL || undefined
   });
 } catch (err) {
   console.error(`FATAL: ${err.message}`);

@@ -24,7 +24,7 @@ export class StoreCorruptError extends Error {
 export const SCHEMA_VERSION = 6;
 const COLLECTIONS = [
   'organisations', 'users', 'websites', 'orders', 'catalog', 'webhooks', 'backups',
-  'auditLogs', 'transactions', 'supportTickets', 'notifications', 'emailOutbox', 'uploads'
+  'auditLogs', 'transactions', 'supportTickets', 'notifications', 'emailOutbox', 'uploads', 'webhookDeliveries'
 ];
 
 export function createStore({ dataDir, now = () => Date.now() }) {
@@ -48,7 +48,7 @@ export function createStore({ dataDir, now = () => Date.now() }) {
     // Legacy (pre-v6) records had no tenant: attach them to the first organisation if there is one.
     const defaultOrg = db.organisations[0]?.id || null;
     if (defaultOrg) {
-      for (const c of ['users', 'websites', 'orders', 'catalog', 'webhooks', 'auditLogs', 'transactions', 'supportTickets', 'notifications', 'emailOutbox', 'uploads']) {
+      for (const c of ['users', 'websites', 'orders', 'catalog', 'webhooks', 'auditLogs', 'transactions', 'supportTickets', 'notifications', 'emailOutbox', 'uploads', 'webhookDeliveries']) {
         for (const rec of db[c]) if (!rec.orgId) rec.orgId = defaultOrg;
       }
     }

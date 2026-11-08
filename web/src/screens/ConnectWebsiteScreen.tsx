@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { api } from '../services/api';
 import {
   Link2,
   CheckCircle2,
@@ -50,19 +51,22 @@ export const ConnectWebsiteScreen: React.FC<Props> = ({
   const handleProbe = async () => {
     setIsProbing(true);
     setProbeResult(null);
-    await new Promise((r) => setTimeout(r, 650));
-
-    const isHealthy = !websiteUrl.includes('broken') && !websiteUrl.includes('invalid');
-    setProbeResult({
-      tested: true,
-      reachable: isHealthy,
-      latencyMs: isHealthy ? 46 : 0,
-      healthEndpointAvailable: isHealthy,
-      tlsVerified: isHttps,
-      message: isHealthy
-        ? 'HTTPS handshake successful. /api/v1/integration/health responded HTTP 200 OK.'
-        : 'Connection refused or host unreachable.'
-    });
+    try {
+      const { data } = await api.post<any>('/api/v1/discovery/probe', { targetUrl: websiteUrl });
+      setProbeResult({
+        tested: true,
+        reachable: !!data.isReachable,
+        latencyMs: data.latencyMs || 0,
+        healthEndpointAvailable: !!data.healthFound,
+        tlsVerified: isHttps && !!data.isReachable,
+        message: data.details || (data.isReachable ? 'Host responded.' : 'Host did not respond.')
+      });
+    } catch (err: any) {
+      setProbeResult({
+        tested: true, reachable: false, latencyMs: 0, healthEndpointAvailable: false, tlsVerified: false,
+        message: err?.message || 'Probe failed'
+      });
+    }
     setIsProbing(false);
   };
 

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { api } from '../services/api';
 import {
   Terminal,
   RefreshCw,
@@ -64,19 +65,28 @@ export const DiagnosticsScreen: React.FC<Props> = ({ activeConfig }) => {
 
   const handlePing = async () => {
     setIsPinging(true);
-    await new Promise((r) => setTimeout(r, 450));
+    let status = 0;
+    let latency = 0;
+    let body = '';
+    try {
+      const r = await api.get<any>('/api/v1/health');
+      status = r.status;
+      latency = r.latencyMs;
+      body = JSON.stringify(r.data);
+    } catch (e: any) {
+      status = e?.status || 0;
+      latency = e?.latencyMs || 0;
+      body = JSON.stringify({ error: e?.message || 'Request failed' });
+    }
     const newEntry = {
       id: `log_${Date.now()}`,
       timestamp: Date.now(),
       method: 'GET',
-      path: '/api/v1/integration/health',
-      status: 200,
-      latency: Math.floor(Math.random() * 25) + 35,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer [REDACTED FOR SECURITY]'
-      },
-      responseBody: '{"status":"UP","timestamp":' + Date.now() + '}'
+      path: '/api/v1/health',
+      status,
+      latency,
+      headers: { 'Content-Type': 'application/json', Authorization: '[not sent]' },
+      responseBody: body
     };
     setDiagnosticEntries([newEntry, ...diagnosticEntries]);
     setIsPinging(false);
