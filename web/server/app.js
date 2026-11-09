@@ -73,6 +73,20 @@ export function createApp(opts) {
   if (trustProxy) app.set('trust proxy', trustProxy);
   app.disable?.('x-powered-by');
 
+  const registeredRoutes = [];
+  for (const m of ['get', 'post', 'put', 'patch', 'delete']) {
+    if (typeof app[m] === 'function') {
+      const orig = app[m].bind(app);
+      app[m] = (p, ...handlers) => {
+        if (typeof p === 'string') {
+          const regex = new RegExp('^' + p.replace(/:[A-Za-z0-9_]+/g, '[^/]+') + '$');
+          registeredRoutes.push({ method: m.toUpperCase(), regex });
+        }
+        return orig(p, ...handlers);
+      };
+    }
+  }
+
   // ------------------------------------------------------------------ helpers
   const wrap = (fn) => (req, res, next) => {
     try {
@@ -376,6 +390,8 @@ export function createApp(opts) {
     const p = String(req.originalUrl || req.url).split('?')[0];
     if (p === `${api}/health` || p === `${api}/ready` || p === `${api}/commercial/plans`) return next();
     if (req.method === 'POST' && p.startsWith(`${api}/inbound/woocommerce/`)) return next(); // authenticated by HMAC signature instead of a session
+    const isKnown = registeredRoutes.some((r) => (r.method === req.method || req.method === 'HEAD') && r.regex.test(p));
+    if (!isKnown) return next();
     return authenticate(req, res, next);
   });
 
