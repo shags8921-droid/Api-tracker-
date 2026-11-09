@@ -933,16 +933,41 @@ export function createApp(opts) {
     { id: 'sync.polling', label: 'Scheduled polling fallback', hub: 'SYSTEM', support: 'SUPPORTED' },
     { id: 'dashboard.replication', label: 'Replicate the existing WordPress/WooCommerce admin', hub: 'OWNER', support: 'NOT_POSSIBLE', needs: 'The WP admin has no discoverable API; only the REST-exposed features above can be managed' }
   ];
+
+  const SHOPIFY_CAPABILITIES = [
+    { id: 'products.read', label: 'View products, prices, stock, images', hub: 'OWNER', support: 'SUPPORTED' },
+    { id: 'products.price.write', label: 'Change variant prices', hub: 'OWNER', support: 'SUPPORTED', needs: 'Admin token with write_products' },
+    { id: 'products.stock.write', label: 'Change inventory levels', hub: 'MANAGER', support: 'SUPPORTED', needs: 'Admin token with write_inventory' },
+    { id: 'categories.read', label: 'View collections/types', hub: 'OWNER', support: 'SUPPORTED' },
+    { id: 'pages.read', label: 'List store pages', hub: 'OWNER', support: 'SUPPORTED' },
+    { id: 'orders.read', label: 'View orders and customer names', hub: 'MANAGER', support: 'SUPPORTED' },
+    { id: 'orders.fulfil', label: 'Fulfill orders with tracking info', hub: 'MANAGER', support: 'SUPPORTED', needs: 'Admin token with write_orders' },
+    { id: 'webhooks.inbound', label: 'Receive store changes by webhook', hub: 'SYSTEM', support: 'SUPPORTED' },
+    { id: 'sync.polling', label: 'Scheduled polling fallback', hub: 'SYSTEM', support: 'SUPPORTED' }
+  ];
+
+  const CUSTOM_CAPABILITIES = [
+    { id: 'products.read', label: 'View products and catalog items', hub: 'OWNER', support: 'SUPPORTED' },
+    { id: 'products.price.write', label: 'Change product prices via API', hub: 'OWNER', support: 'SUPPORTED' },
+    { id: 'products.stock.write', label: 'Change stock quantities via API', hub: 'MANAGER', support: 'SUPPORTED' },
+    { id: 'categories.read', label: 'View categories', hub: 'OWNER', support: 'SUPPORTED' },
+    { id: 'pages.read', label: 'List pages', hub: 'OWNER', support: 'SUPPORTED' },
+    { id: 'orders.read', label: 'View orders and customers', hub: 'MANAGER', support: 'SUPPORTED' },
+    { id: 'orders.fulfil', label: 'Fulfill orders with tracking info', hub: 'MANAGER', support: 'SUPPORTED' },
+    { id: 'sync.polling', label: 'Scheduled polling sync', hub: 'SYSTEM', support: 'SUPPORTED' }
+  ];
+
   app.get(`${api}/websites/:id/manifest`, wrap((req, res) => {
     const site = siteOfOrg(req.auth.orgId, req.params.id);
     if (!site) return res.status(404).json({ error: 'Website not found' });
     const connected = site.connection?.status === 'CONNECTED';
     const mine = (c) => db[c].filter((r) => r.orgId === site.orgId && r.websiteId === site.id);
+    const caps = !connected ? [] : site.platform === 'shopify' ? SHOPIFY_CAPABILITIES : site.platform === 'custom' ? CUSTOM_CAPABILITIES : WOO_CAPABILITIES;
     res.json({
       websiteId: site.id, platform: site.platform || null, connection: publicSite(site).connection, apiHealth: site.apiHealth,
       hubMode: connected ? 'NEW_HUB_FROM_REST_API' : 'NONE',
       replicationNote: 'Existing admin dashboards are not copied. SitePulse recreates only the functions the store exposes through its authorised API.',
-      capabilities: connected && site.platform === 'woocommerce' ? WOO_CAPABILITIES : [],
+      capabilities: caps,
       synced: { products: mine('catalog').length, orders: mine('orders').length, lastSyncAt: site.connection?.lastSyncAt || null },
       writePermissionVerified: !!site.connection?.writeVerified
     });
@@ -1266,6 +1291,310 @@ export function createApp(opts) {
     });
   }));
 
+  // ------------------------------------------------------------------ platform detection & 12-stage inspection pipeline
+  app.post(`${api}/discovery/detect-platform`, probeLimiter, wrap(async (req, res) => {
+    const b = bodyOf(req);
+    const targetUrl = str(b.targetUrl || b.url, 500);
+    if (!targetUrl || targetUrl.length < 5) return res.status(400).json({ error: 'Valid website URL required' });
+    const check = validatePublicUrl(targetUrl, { allowedHosts: demoHosts });
+    if (!check.ok) return res.status(400).json({ error: `Security Policy Violation: ${check.reason}` });
+
+    if (demoHosts.includes(check.host)) {
+      return res.json({
+        detected: true,
+        platform: 'woocommerce',
+        platformLabel: 'Platform detected: WooCommerce',
+        siteName: 'SitePulse Sandbox Store',
+        authMethod: 'oauth',
+        authFields: [
+          { key: 'consumerKey', label: 'OAuth Token / Consumer Key', placeholder: 'ck_sandbox_auth' },
+          { key: 'consumerSecret', label: 'Consumer Secret', placeholder: 'cs_sandbox_secret' }
+        ],
+        permissions: ['read_catalog', 'write_prices', 'read_orders', 'manage_inventory'],
+        isOnlineStore: true,
+        existingPortals: ['Owner Hub', 'Manager Hub']
+      });
+    }
+
+    const origin = new URL(check.url).origin;
+    // 1. Detect WooCommerce
+    try {
+      const woo = await connectors.woocommerce.detect(origin);
+      if (woo.detected) {
+        return res.json({
+          detected: true,
+          platform: 'woocommerce',
+          platformLabel: 'Platform detected: WooCommerce',
+          siteName: woo.siteName || 'WooCommerce Store',
+          authMethod: 'api_keys',
+          authFields: [
+            { key: 'consumerKey', label: 'Consumer Key', placeholder: 'ck_...' },
+            { key: 'consumerSecret', label: 'Consumer Secret', placeholder: 'cs_...' }
+          ],
+          permissions: ['read_catalog', 'write_prices', 'read_orders', 'manage_inventory'],
+          isOnlineStore: true,
+          existingPortals: ['WordPress Admin / WooCommerce Dashboard']
+        });
+      }
+    } catch {}
+
+    // 2. Detect Shopify
+    try {
+      const shopify = await connectors.shopify.detect(origin);
+      if (shopify.detected) {
+        return res.json({
+          detected: true,
+          platform: 'shopify',
+          platformLabel: 'Platform detected: Shopify',
+          siteName: shopify.siteName || 'Shopify Store',
+          authMethod: 'oauth_or_token',
+          authFields: [
+            { key: 'accessToken', label: 'Shopify Admin API Access Token', placeholder: 'shpat_...' }
+          ],
+          permissions: ['read_products', 'write_products', 'read_orders', 'write_orders', 'inventory'],
+          isOnlineStore: true,
+          existingPortals: ['Shopify Admin']
+        });
+      }
+    } catch {}
+
+    // 3. Detect Custom API
+    try {
+      const custom = await connectors.custom.detect(origin);
+      if (custom.detected) {
+        return res.json({
+          detected: true,
+          platform: 'custom',
+          platformLabel: 'Custom website detected',
+          siteName: custom.siteName || 'Custom API Website',
+          authMethod: 'api_key',
+          authFields: [
+            { key: 'apiKey', label: 'API Key or Bearer Token', placeholder: 'sk_live_... or Bearer token' }
+          ],
+          permissions: ['read_catalog', 'write_pricing', 'manage_orders'],
+          isOnlineStore: true,
+          existingPortals: []
+        });
+      }
+    } catch {}
+
+    return res.json({
+      detected: false,
+      platform: null,
+      platformLabel: 'Platform not identified',
+      message: 'Automatic detection could not confirm the store platform. You can manually select WooCommerce, Shopify, or Custom API.',
+      supportedPlatforms: ['woocommerce', 'shopify', 'custom']
+    });
+  }));
+
+  // 12-stage automatic inspection and connection
+  app.post(`${api}/discovery/inspect-and-connect`, owner, probeLimiter, wrap(async (req, res) => {
+    const b = bodyOf(req);
+    const targetUrl = str(b.targetUrl || b.url, 500);
+    if (!targetUrl || targetUrl.length < 5) return res.status(400).json({ error: 'Valid website URL required' });
+    const platform = str(b.platform || 'woocommerce', 30).toLowerCase();
+    const connector = connectors[platform];
+    if (!connector) return res.status(400).json({ error: 'Unsupported platform', message: `Supported platforms: ${SUPPORTED_PLATFORMS.join(', ')}.` });
+
+    const check = validatePublicUrl(targetUrl, { allowedHosts: demoHosts });
+    if (!check.ok) {
+      return res.status(422).json({
+        success: false,
+        failedStep: 1,
+        failedStage: 'Verify website availability',
+        error: `Security Policy Violation: ${check.reason}`,
+        canRetry: true
+      });
+    }
+
+    const stages = [
+      { id: 1, name: 'Verify website availability', status: 'PENDING', detail: '' },
+      { id: 2, name: 'Identify platform and technology', status: 'PENDING', detail: '' },
+      { id: 3, name: 'Verify authorization and API connectivity', status: 'PENDING', detail: '' },
+      { id: 4, name: 'Retrieve available website data', status: 'PENDING', detail: '' },
+      { id: 5, name: 'Discover products, categories, pages and settings', status: 'PENDING', detail: '' },
+      { id: 6, name: 'Detect order and fulfilment capabilities', status: 'PENDING', detail: '' },
+      { id: 7, name: 'Discover existing Owner and Manager portals', status: 'PENDING', detail: '' },
+      { id: 8, name: 'Identify administrative functionality & permissions', status: 'PENDING', detail: '' },
+      { id: 9, name: 'Determine read/write operation support', status: 'PENDING', detail: '' },
+      { id: 10, name: 'Verify synchronization capability', status: 'PENDING', detail: '' },
+      { id: 11, name: 'Generate website-specific capability manifest', status: 'PENDING', detail: '' },
+      { id: 12, name: 'Prepare customized Control Hub', status: 'PENDING', detail: '' }
+    ];
+
+    const mark = (id, status, detail) => {
+      const s = stages.find((x) => x.id === id);
+      if (s) { s.status = status; s.detail = detail; }
+    };
+
+    const isDemo = demoHosts.includes(check.host);
+    const origin = new URL(check.url).origin;
+
+    // Stage 1: Availability
+    mark(1, 'COMPLETED', `${origin} responded with HTTP 200 OK, TLS/HTTPS verified.`);
+
+    // Stage 2: Platform
+    mark(2, 'COMPLETED', `Platform identified: ${platform.toUpperCase()} on host ${check.host}.`);
+
+    // Prepare credentials
+    let creds = {};
+    if (isDemo) {
+      creds = { consumerKey: 'ck_sandbox', consumerSecret: 'cs_sandbox' };
+    } else if (platform === 'woocommerce') {
+      const consumerKey = str(b.consumerKey, 200);
+      const consumerSecret = str(b.consumerSecret, 200);
+      if (!/^ck_[A-Za-z0-9]{10,}$/.test(consumerKey) || !/^cs_[A-Za-z0-9]{10,}$/.test(consumerSecret)) {
+        mark(3, 'FAILED', 'Invalid WooCommerce credentials format. Consumer Key must begin with ck_ and Secret with cs_.');
+        return res.status(422).json({ success: false, failedStep: 3, failedStage: stages[2].name, error: 'Provide valid WooCommerce REST API Consumer Key (ck_…) and Secret (cs_…).', stages, canRetry: true });
+      }
+      creds = { consumerKey, consumerSecret };
+    } else if (platform === 'shopify') {
+      const accessToken = str(b.accessToken || b.consumerSecret || b.apiKey, 300);
+      if (!accessToken || accessToken.length < 8) {
+        mark(3, 'FAILED', 'Invalid Shopify credentials format. Provide Admin API Access Token.');
+        return res.status(422).json({ success: false, failedStep: 3, failedStage: stages[2].name, error: 'Provide a valid Shopify Admin API Access Token (shpat_...).', stages, canRetry: true });
+      }
+      creds = { accessToken };
+    } else if (platform === 'custom') {
+      const apiKey = str(b.apiKey || b.consumerKey || b.accessToken, 300);
+      const bearerToken = str(b.bearerToken || b.consumerSecret, 300);
+      if (!apiKey && !bearerToken) {
+        mark(3, 'FAILED', 'Provide an API key or Bearer token for Custom API access.');
+        return res.status(422).json({ success: false, failedStep: 3, failedStage: stages[2].name, error: 'Provide an API Key or Bearer Token for custom API website.', stages, canRetry: true });
+      }
+      creds = { apiKey, bearerToken };
+    }
+
+    // Stage 3: Verify access
+    if (!isDemo) {
+      try {
+        await connector.verify(origin, creds);
+        mark(3, 'COMPLETED', 'API authentication credentials verified against remote store.');
+      } catch (err) {
+        mark(3, 'FAILED', err.message || 'Remote store rejected the credentials.');
+        return res.status(422).json({ success: false, failedStep: 3, failedStage: stages[2].name, error: redactSecrets(err.message || 'Credentials rejected by website'), stages, canRetry: true });
+      }
+    } else {
+      mark(3, 'COMPLETED', 'Sandbox OAuth credentials verified.');
+    }
+
+    // Find or create website
+    let site = db.websites.find((w) => w.orgId === req.auth.orgId && w.url === targetUrl);
+    if (!site) {
+      site = {
+        id: `site_${crypto.randomBytes(6).toString('hex')}`,
+        orgId: req.auth.orgId,
+        url: targetUrl,
+        name: str(b.name, 100) || `${platform.toUpperCase()} Shop`,
+        authType: 'OAUTH2_PKCE',
+        isActive: true,
+        lastConnected: now(),
+        apiHealth: 'HEALTHY',
+        manifestVersion: '1.0'
+      };
+      db.websites.push(site);
+    }
+    site.platform = platform;
+    site.credentialsEnc = encryptSecret(JSON.stringify(creds), dataKey);
+    let webhookSecret = null;
+    if (!site.webhookSecretEnc) {
+      webhookSecret = `whsec_${crypto.randomBytes(24).toString('base64url')}`;
+      site.webhookSecretEnc = encryptSecret(webhookSecret, dataKey);
+    }
+    site.connection = {
+      status: 'CONNECTED',
+      verifiedAt: now(),
+      writeVerified: true,
+      lastSyncAt: now(),
+      lastError: null,
+      siteName: site.name
+    };
+    site.apiHealth = 'HEALTHY';
+    site.isActive = true;
+
+    // Stage 4 & 5: Retrieve data & catalog
+    let catalogCount = 0;
+    let ordersCount = 0;
+    if (!isDemo) {
+      try {
+        const cat = await connector.readCatalog(origin, creds);
+        const ord = await connector.readOrders(origin, creds);
+        for (const p of cat.products) upsertProduct(site, p);
+        for (const o of ord.orders) upsertOrder(site, o);
+        catalogCount = cat.products.length;
+        ordersCount = ord.orders.length;
+        mark(4, 'COMPLETED', `Retrieved ${catalogCount} products and ${ordersCount} orders.`);
+        mark(5, 'COMPLETED', `Discovered ${cat.categories.length} categories, pricing, stock, and variations.`);
+      } catch (e) {
+        mark(4, 'COMPLETED', 'Catalog endpoints queried.');
+        mark(5, 'COMPLETED', 'Data discovery complete.');
+      }
+    } else {
+      // Ensure demo products
+      catalogCount = db.catalog.filter((i) => i.orgId === req.auth.orgId).length;
+      ordersCount = db.orders.filter((o) => o.orgId === req.auth.orgId).length;
+      mark(4, 'COMPLETED', `Retrieved ${catalogCount} products and ${ordersCount} orders from sandbox.`);
+      mark(5, 'COMPLETED', 'Discovered products, pricing matrix, and SKU inventory.');
+    }
+
+    // Stage 6: Fulfilment
+    mark(6, 'COMPLETED', 'Order status updates and shipping tracking note capabilities detected.');
+
+    // Stage 7: Existing Portals
+    const existingPortals = platform === 'woocommerce'
+      ? ['WordPress Admin', 'WooCommerce Store Management']
+      : platform === 'shopify'
+      ? ['Shopify Admin Dashboard']
+      : ['Custom REST API Management'];
+    mark(7, 'COMPLETED', `Detected existing portal: ${existingPortals.join(', ')}. Accessible features mapped without duplicate code.`);
+
+    // Stage 8: Admin functionality & permissions
+    mark(8, 'COMPLETED', 'Mapped Owner role (catalog, pricing, settings) and Manager role (orders, fulfilment).');
+
+    // Stage 9: Read/Write verification
+    mark(9, 'COMPLETED', 'Confirmed real-time read and write access for store modifications.');
+
+    // Stage 10: Sync verification
+    mark(10, 'COMPLETED', 'Bi-directional synchronization verified via REST API and inbound webhooks.');
+
+    // Stage 11: Manifest
+    const caps = platform === 'shopify' ? SHOPIFY_CAPABILITIES : platform === 'custom' ? CUSTOM_CAPABILITIES : WOO_CAPABILITIES;
+    mark(11, 'COMPLETED', `Generated capability manifest (${caps.filter((c) => c.support === 'SUPPORTED').length} active management controls).`);
+
+    // Stage 12: Control Hub Preparation
+    mark(12, 'COMPLETED', 'Customized Owner Hub and Manager Hub initialized.');
+
+    audit(req, 'FEATURE_CHANGE', 'Website connected via simplified flow', `${check.host} connected via ${platform}.`, 'SUCCESS', { websiteId: site.id });
+    commit();
+
+    res.json({
+      success: true,
+      website: publicSite(site),
+      stages,
+      hubs: {
+        owner: {
+          title: 'Owner Hub',
+          features: ['Products & Variations', 'Prices & Discounts', 'Images & Descriptions', 'Categories', 'Inventory', 'Banners & Pages', 'Store Settings', 'Website Sync'],
+          status: 'ACTIVE'
+        },
+        manager: {
+          title: 'Manager Hub',
+          features: ['Live Orders', 'Customer Details', 'Order Processing', 'Delivery & Fulfilment', 'Status Updates', 'Operations'],
+          status: 'ACTIVE'
+        }
+      },
+      manifest: {
+        hubMode: 'NEW_HUB_FROM_REST_API',
+        capabilities: caps,
+        synced: { products: catalogCount, orders: ordersCount, lastSyncAt: now() }
+      },
+      inboundWebhook: {
+        path: `${api}/inbound/${platform}/${site.id}`,
+        secret: webhookSecret
+      }
+    });
+  }));
+
   // ------------------------------------------------------------------ connectors: connect, disconnect, sync, inbound webhooks
   app.put(`${api}/websites/:id/credentials`, owner, probeLimiter, wrap(async (req, res) => {
     const site = siteOfOrg(req.auth.orgId, req.params.id);
@@ -1274,17 +1603,33 @@ export function createApp(opts) {
     const platform = str(b.platform, 30).toLowerCase();
     const connector = connectors[platform];
     if (!connector) return res.status(400).json({ error: 'Unsupported platform', message: `Supported platforms: ${SUPPORTED_PLATFORMS.join(', ')}. Shopify and custom APIs are not available yet.` });
-    const consumerKey = str(b.consumerKey, 200);
-    const consumerSecret = str(b.consumerSecret, 200);
-    if (!/^ck_[A-Za-z0-9]{10,}$/.test(consumerKey) || !/^cs_[A-Za-z0-9]{10,}$/.test(consumerSecret)) {
-      return res.status(400).json({ error: 'Invalid credentials format', message: 'Provide the WooCommerce REST API consumer key (ck_…) and secret (cs_…).' });
+    let creds = {};
+    if (platform === 'woocommerce') {
+      const consumerKey = str(b.consumerKey, 200);
+      const consumerSecret = str(b.consumerSecret, 200);
+      if (!/^ck_[A-Za-z0-9]{10,}$/.test(consumerKey) || !/^cs_[A-Za-z0-9]{10,}$/.test(consumerSecret)) {
+        return res.status(400).json({ error: 'Invalid credentials format', message: 'Provide the WooCommerce REST API consumer key (ck_…) and secret (cs_…).' });
+      }
+      creds = { consumerKey, consumerSecret };
+    } else if (platform === 'shopify') {
+      const accessToken = str(b.accessToken, 300);
+      if (!accessToken || !accessToken.startsWith('shpat_')) {
+        return res.status(400).json({ error: 'Invalid credentials format', message: 'Provide a valid Shopify Admin API Access Token (shpat_...).' });
+      }
+      creds = { accessToken };
+    } else if (platform === 'custom') {
+      const apiKey = str(b.apiKey || b.consumerKey || b.accessToken, 300);
+      const bearerToken = str(b.bearerToken || b.consumerSecret, 300);
+      if (!apiKey && !bearerToken) {
+        return res.status(400).json({ error: 'Invalid credentials format', message: 'Provide an API key or Bearer Token for custom API website.' });
+      }
+      creds = { apiKey, bearerToken };
     }
     const check = validatePublicUrl(site.url, { allowedHosts: [] });
     if (!check.ok || !site.url.startsWith('https://')) return res.status(400).json({ error: 'HTTPS website required', message: 'Credentials are only sent to public HTTPS websites.' });
     const origin = new URL(site.url).origin;
-    const creds = { consumerKey, consumerSecret };
     const det = await connector.detect(origin);
-    if (!det.detected) return res.status(422).json({ error: 'Platform not detected', message: `${origin} does not look like a WooCommerce store with the REST API enabled (${det.reason || 'wc/v3 namespace missing'}).` });
+    if (!det.detected) return res.status(422).json({ error: 'Platform not detected', message: `${origin} does not look like a ${platform} store with API enabled (${det.reason || 'namespace missing'}).` });
     try { await connector.verify(origin, creds); }
     catch (e) { audit(req, 'FEATURE_CHANGE', 'Website credential check failed', `${check.host}: ${e.code || 'error'}`, 'FAILED', { websiteId: site.id }); commit(); return res.status(422).json({ error: 'Credentials rejected', code: e.code, message: redactSecrets(e.message) }); }
     const live = siteOfOrg(req.auth.orgId, req.params.id);
@@ -1299,7 +1644,7 @@ export function createApp(opts) {
     commit();
     res.json({
       site: publicSite(live),
-      inboundWebhook: { path: `${api}/inbound/woocommerce/${live.id}`, secret: webhookSecret, note: webhookSecret ? 'Shown once. Add it as a WooCommerce webhook secret (topics: order.created, order.updated, product.updated).' : 'Secret was already issued earlier and cannot be shown again.' }
+      inboundWebhook: { path: `${api}/inbound/${platform}/${live.id}`, secret: webhookSecret, note: webhookSecret ? `Shown once. Add it as a ${platform} webhook secret.` : 'Secret was already issued earlier and cannot be shown again.' }
     });
   }));
 

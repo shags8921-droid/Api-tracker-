@@ -137,6 +137,59 @@ fun DashboardScreen(
           }
         }
 
+        // 1. Main Dashboard: Clearly visible "Website Connect" option
+        item {
+          Card(
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = CyanNeon.copy(alpha = 0.08f)),
+            border = androidx.compose.foundation.BorderStroke(1.dp, CyanNeon.copy(alpha = 0.35f)),
+            modifier = Modifier
+              .fillMaxWidth()
+              .clickable { onNavigateToConnect() }
+              .testTag("dashboard_website_connect_card")
+          ) {
+            Row(
+              modifier = Modifier.padding(16.dp),
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Box(
+                modifier = Modifier
+                  .size(44.dp)
+                  .clip(RoundedCornerShape(12.dp))
+                  .background(CyanNeon.copy(alpha = 0.18f)),
+                contentAlignment = Alignment.Center
+              ) {
+                Icon(
+                  imageVector = Icons.Default.Public,
+                  contentDescription = "Website Connect",
+                  tint = CyanNeon,
+                  modifier = Modifier.size(24.dp)
+                )
+              }
+              Spacer(modifier = Modifier.width(14.dp))
+              Column(modifier = Modifier.weight(1f)) {
+                Text(
+                  text = "Website Connect",
+                  fontSize = 15.sp,
+                  fontWeight = FontWeight.Bold,
+                  color = MaterialTheme.colorScheme.onBackground
+                )
+                Text(
+                  text = "Connect website with 4 simple inputs to auto-generate Owner & Manager Hubs.",
+                  fontSize = 12.sp,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+              }
+              Icon(
+                imageVector = Icons.Outlined.ArrowForward,
+                contentDescription = null,
+                tint = CyanNeon,
+                modifier = Modifier.size(20.dp)
+              )
+            }
+          }
+        }
+
         // Multi-Site Switcher Bar if > 1 saved sites
         if (savedWebsites.size > 1) {
           item {

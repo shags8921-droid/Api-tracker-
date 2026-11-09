@@ -440,6 +440,7 @@ const AppShell: React.FC<{ user: SessionUser; onSignOut: () => void }> = ({ user
               onSwitchWebsite={handleSwitchWebsite}
               onProceedToAuth={() => setCurrentScreen('auth')}
               onNavigate={setCurrentScreen}
+              userRole={userRole}
             />
           )}
 

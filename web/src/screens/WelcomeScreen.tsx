@@ -66,16 +66,23 @@ export const WelcomeScreen: React.FC<Props> = ({ onNavigate, onSelectPreset }) =
           <div className="flex flex-wrap items-center gap-3 pt-3">
             <button
               onClick={() => onNavigate('connect')}
-              className="btn-primary px-6 py-3 text-sm shadow-xl shadow-cyan-500/25"
+              className="btn-primary px-7 py-3.5 text-sm font-extrabold shadow-xl shadow-cyan-500/25 flex items-center gap-2 tracking-wide"
             >
-              Connect Website
+              <Globe2 size={18} />
+              Website Connect
               <ArrowRight size={16} />
             </button>
             <button
-              onClick={() => onNavigate('agent')}
+              onClick={() => onNavigate('owner')}
               className="btn-secondary px-5 py-3 text-sm"
             >
-              Explore AI Agent
+              Owner Hub
+            </button>
+            <button
+              onClick={() => onNavigate('manager')}
+              className="btn-secondary px-5 py-3 text-sm"
+            >
+              Manager Hub
             </button>
           </div>
         </div>
