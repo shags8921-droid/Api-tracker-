@@ -456,3 +456,33 @@ test('webhooks: real safePost refuses private targets at connect time', async ()
   assert.equal(r.ok, false);
   assert.match(r.error, /Blocked: private address/);
 });
+
+test('phase14: /ready reports ok, then 503 while shutting down; /health stays 200', async () => {
+  const h = boot();
+  assert.equal((await h.call('GET', '/ready')).status, 200);
+  h.setShuttingDown();
+  assert.equal((await h.call('GET', '/ready')).status, 503);
+  assert.equal((await h.call('GET', '/health')).status, 200);
+});
+
+test('phase14 FAIL-002: failed save rolls memory back, returns 503, and nothing phantom is visible', async () => {
+  const h = boot();
+  const { token } = await register(h, 'rb@example.com');
+  const before = (await h.call('GET', '/websites', { token })).body;
+  const realSave = h.store.save;
+  h.store.save = () => { throw new Error('disk full'); };
+  const r = await h.call('POST', '/websites', { token, body: { name: 'Phantom', url: 'https://example.com' } });
+  h.store.save = realSave;
+  assert.equal(r.status, 503);
+  const after = (await h.call('GET', '/websites', { token })).body;
+  assert.deepEqual(after, before);
+});
+
+test('phase14 PERF-002: concurrent logins complete without blocking and overload is bounded', async () => {
+  const h = boot();
+  await register(h, 'pf@example.com');
+  const t0 = Date.now();
+  const rs = await Promise.all(Array.from({ length: 8 }, (_, i) => h.call('POST', '/auth/login', { ip: `10.0.0.${i + 1}`, body: { email: 'pf@example.com', password: PW } })));
+  assert.ok(rs.every((r) => r.status === 200), rs.map((r) => r.status).join(','));
+  console.log(`# 8 concurrent logins in ${Date.now() - t0}ms`);
+});

@@ -67,6 +67,32 @@ const server = instance.app.listen(port, () => {
   console.log(`SitePulse AI server listening on :${port} (${production ? 'production' : 'development'})`);
 });
 
-const shutdown = () => server.close(() => process.exit(0));
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+let stopping = false;
+const shutdown = (signal) => {
+  if (stopping) return;
+  stopping = true;
+  console.log(`[shutdown] ${signal} received: draining`);
+  instance.setShuttingDown(); // /ready now returns 503 so the proxy stops routing here
+  const force = setTimeout(() => {
+    console.error('[shutdown] forced exit after timeout');
+    process.exit(1);
+  }, 25000);
+  force.unref();
+  server.close(async () => {
+    try {
+      await Promise.race([instance.drainWebhooks(), new Promise((r) => setTimeout(r, 10000))]);
+    } catch { /* best effort */ }
+    process.exit(0);
+  });
+  server.closeIdleConnections?.();
+};
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('uncaughtException', (err) => {
+  console.error(`[fatal] uncaughtException: ${err?.message}`);
+  process.exit(1);
+});
+process.on('unhandledRejection', (err) => {
+  console.error(`[fatal] unhandledRejection: ${err?.message ?? err}`);
+  process.exit(1);
+});

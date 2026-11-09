@@ -18,7 +18,7 @@ import { createGeminiClient } from './lib/ai.js';
 import { deliverWithRetry, safePost } from './lib/webhooks.js';
 import { decryptSecret } from './lib/security.js';
 import {
-  hashPassword, verifyPassword, DUMMY_HASH, validatePasswordStrength, signToken, verifyToken,
+  hashPassword, verifyPassword, hashPasswordAsync, verifyPasswordAsync, DUMMY_HASH, validatePasswordStrength, signToken, verifyToken,
   normaliseEmail, isValidEmail, publicUser, createLoginThrottle
 } from './lib/auth.js';
 import { PLANS, FREE_PLAN, GATEWAYS, DAY_MS, findPlan, planPrice, orgLimitsFor, effectiveSubscription } from './lib/plans.js';
@@ -80,7 +80,21 @@ export function createApp(opts) {
       next(e);
     }
   };
-  const commit = () => store.save();
+  // Persist, or roll the in-memory state back to the last persisted state and fail the request with 503.
+  const commit = () => {
+    try {
+      store.save();
+    } catch (cause) {
+      try {
+        store.reload();
+      } catch (reloadErr) {
+        logger.error?.(`[store] reload after failed save also failed: ${reloadErr.message}`);
+      }
+      logger.error?.(`[store] save failed, change rolled back: ${cause.message}`);
+      throw Object.assign(new Error('Persistence failed'), { status: 503, cause });
+    }
+  };
+  let shuttingDown = false;
   const orgById = (id) => db.organisations.find((o) => o.id === id);
   const limitsOf = (org) => effectiveSubscription(org, now()).limits;
   const publicOrg = (org) => ({
@@ -164,14 +178,14 @@ export function createApp(opts) {
     };
   };
 
-  const newUser = ({ orgId, name, email, role, password, mustChangePassword = false }) => ({
+  const newUser = ({ orgId, name, email, role, password, passwordHash, mustChangePassword = false }) => ({
     id: randomId('usr'),
     orgId,
     name,
     email,
     role,
     status: 'ACTIVE',
-    passwordHash: hashPassword(password),
+    passwordHash: passwordHash || hashPassword(password),
     tokenVersion: 0,
     mustChangePassword,
     createdAt: now(),
@@ -196,6 +210,8 @@ export function createApp(opts) {
     (req.method === 'POST' && String(req.originalUrl || req.url).split('?')[0] === '/api/v1/uploads' ? jsonUpload : jsonSmall)(req, res, next));
   app.use('/api', (req, res, next) => {
     const start = now();
+    req.id = crypto.randomUUID();
+    res.setHeader('X-Request-Id', req.id);
     inflight += 1;
     let done = false;
     const finish = () => {
@@ -203,6 +219,11 @@ export function createApp(opts) {
       done = true;
       inflight -= 1;
       const latencyMs = now() - start;
+      const logPath = String(req.originalUrl || req.url).split('?')[0];
+      if (logPath !== `${api}/health` && logPath !== `${api}/ready`) {
+        // One JSON line per request. Never logs headers, query strings, bodies, emails or tokens.
+        logger.log?.(JSON.stringify({ t: new Date(now()).toISOString(), id: req.id, method: req.method, path: logPath, status: res.statusCode, ms: latencyMs, org: req.auth?.orgId, user: req.auth?.userId }));
+      }
       latencies.push(latencyMs);
       if (latencies.length > 500) latencies.shift();
       const orgId = req.auth?.orgId;
@@ -289,7 +310,21 @@ export function createApp(opts) {
 
   app.get(`${api}/commercial/plans`, (req, res) => res.json(PLANS));
 
-  app.post(`${api}/auth/register`, authLimiter, wrap((req, res) => {
+  // Readiness: can this instance serve traffic safely? (Liveness is /health.) Used by the host's health check
+  // and removed from rotation as soon as shutdown begins.
+  app.get(`${api}/ready`, (req, res) => {
+    let storageOk = true;
+    try {
+      fs.accessSync(store.dbFile, fs.constants.R_OK | fs.constants.W_OK);
+      fs.accessSync(path.dirname(store.dbFile), fs.constants.W_OK);
+    } catch {
+      storageOk = false;
+    }
+    if (shuttingDown || !storageOk) return res.status(503).json({ status: 'NOT_READY', shuttingDown, storage: storageOk ? 'OK' : 'UNAVAILABLE' });
+    return res.json({ status: 'READY' });
+  });
+
+  app.post(`${api}/auth/register`, authLimiter, wrap(async (req, res) => {
     const b = bodyOf(req);
     const orgName = str(b.orgName ?? b.organisationName, 80);
     const email = normaliseEmail(b.email);
@@ -300,8 +335,11 @@ export function createApp(opts) {
     if (pwError) return res.status(400).json({ error: pwError });
     if (db.users.some((u) => u.email === email)) return res.status(409).json({ error: 'An account with this email already exists' });
 
+    const passwordHash = await hashPasswordAsync(b.password);
+    // Re-check after the await: another request may have registered the same email while we were hashing.
+    if (db.users.some((u) => u.email === email)) return res.status(409).json({ error: 'An account with this email already exists' });
     const org = newOrg({ name: orgName, category: b.category, ownerId: null });
-    const user = newUser({ orgId: org.id, name, email, role: 'OWNER', password: b.password });
+    const user = newUser({ orgId: org.id, name, email, role: 'OWNER', passwordHash });
     org.ownerId = user.id;
     user.lastLogin = 'Just now';
     db.organisations.push(org);
@@ -311,15 +349,15 @@ export function createApp(opts) {
     res.status(201).json({ token: issueToken(user), user: publicUser(user), organisation: publicOrg(org) });
   }));
 
-  app.post(`${api}/auth/login`, authLimiter, wrap((req, res) => {
+  app.post(`${api}/auth/login`, authLimiter, wrap(async (req, res) => {
     const b = bodyOf(req);
     const email = normaliseEmail(b.email);
     const password = typeof b.password === 'string' ? b.password : '';
     if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
     if (throttle.isLocked(email)) return res.status(429).json({ error: 'Too Many Requests', message: 'Too many failed sign-in attempts. Try again later.' });
 
-    const user = db.users.find((u) => u.email === email);
-    const passwordOk = verifyPassword(password, user?.passwordHash || DUMMY_HASH);
+    const passwordOk = await verifyPasswordAsync(password, db.users.find((u) => u.email === email)?.passwordHash || DUMMY_HASH);
+    const user = db.users.find((u) => u.email === email); // re-read: the account may have changed while hashing
     if (!user || !user.passwordHash || !passwordOk || user.status !== 'ACTIVE') {
       throttle.recordFailure(email);
       return res.status(401).json({ error: 'Unauthorized', message: 'Invalid email or password' });
@@ -333,7 +371,7 @@ export function createApp(opts) {
   // ================================================================== authenticated from here on
   app.use(`${api}`, (req, res, next) => {
     const p = String(req.originalUrl || req.url).split('?')[0];
-    if (p === `${api}/health` || p === `${api}/commercial/plans`) return next();
+    if (p === `${api}/health` || p === `${api}/ready` || p === `${api}/commercial/plans`) return next();
     return authenticate(req, res, next);
   });
 
@@ -349,13 +387,16 @@ export function createApp(opts) {
     res.json({ success: true });
   }));
 
-  app.post(`${api}/auth/change-password`, authLimiter, wrap((req, res) => {
+  app.post(`${api}/auth/change-password`, authLimiter, wrap(async (req, res) => {
     const b = bodyOf(req);
-    const user = db.users.find((u) => u.id === req.auth.userId);
-    if (!verifyPassword(String(b.currentPassword ?? ''), user.passwordHash)) return res.status(401).json({ error: 'Current password is incorrect' });
+    const found = db.users.find((u) => u.id === req.auth.userId);
+    if (!(await verifyPasswordAsync(String(b.currentPassword ?? ''), found.passwordHash))) return res.status(401).json({ error: 'Current password is incorrect' });
     const pwError = validatePasswordStrength(b.newPassword);
     if (pwError) return res.status(400).json({ error: pwError });
-    user.passwordHash = hashPassword(b.newPassword);
+    const newHash = await hashPasswordAsync(b.newPassword);
+    const user = db.users.find((u) => u.id === req.auth.userId);
+    if (!user || user.passwordHash !== found.passwordHash) return res.status(409).json({ error: 'Account changed while updating the password. Please retry.' });
+    user.passwordHash = newHash;
     user.tokenVersion = (user.tokenVersion || 0) + 1;
     user.mustChangePassword = false;
     audit(req, 'USER_APPROVAL', 'Password changed', 'Account password was changed; other sessions were revoked.');
@@ -630,7 +671,7 @@ export function createApp(opts) {
 
   app.get(`${api}/admin/users`, owner, (req, res) => res.json(usersOf(req).map(publicUser)));
 
-  app.post(`${api}/admin/users/invite`, owner, idempotent, wrap((req, res) => {
+  app.post(`${api}/admin/users/invite`, owner, idempotent, wrap(async (req, res) => {
     const b = bodyOf(req);
     const email = normaliseEmail(b.email);
     if (!isValidEmail(email)) return res.status(400).json({ error: 'Valid email is required' });
@@ -642,8 +683,12 @@ export function createApp(opts) {
     if (usersOf(req).length >= max) return res.status(403).json({ error: 'Plan limit reached', message: `Your plan allows ${max} team member(s). Upgrade to add more.` });
 
     const temporaryPassword = `${crypto.randomBytes(9).toString('base64url')}-Aa1`;
+    const passwordHash = await hashPasswordAsync(temporaryPassword);
+    // Re-check limits/duplicates after the await (concurrent invites could otherwise exceed the plan or duplicate an email).
+    if (db.users.some((u) => u.email === email)) return res.status(409).json({ error: 'A user with this email already exists' });
+    if (usersOf(req).length >= max) return res.status(403).json({ error: 'Plan limit reached', message: `Your plan allows ${max} team member(s). Upgrade to add more.` });
     const user = newUser({
-      orgId: org.id, name: str(b.name, 80) || email.split('@')[0], email, role, password: temporaryPassword, mustChangePassword: true
+      orgId: org.id, name: str(b.name, 80) || email.split('@')[0], email, role, passwordHash, mustChangePassword: true
     });
     db.users.push(user);
     audit(req, 'USER_APPROVAL', 'Team member created', `${email} added as ${role}.`);
@@ -1163,8 +1208,9 @@ export function createApp(opts) {
   app.use((err, req, res, next) => {
     const status = Number(err.status || err.statusCode) || 500;
     if (status >= 500) {
-      logger.error?.(`[error] ${req.method} ${String(req.originalUrl || req.url).split('?')[0]}: ${err.message}`);
-      return res.status(500).json({ error: 'Internal Server Error', message: 'An unexpected error occurred.' });
+      logger.error?.(JSON.stringify({ level: 'error', id: req.id, method: req.method, path: String(req.originalUrl || req.url).split('?')[0], status, message: err.message }));
+      if (status === 503) return res.status(503).json({ error: 'Service Unavailable', message: 'The service is temporarily unable to complete this request. Please retry.', requestId: req.id });
+      return res.status(500).json({ error: 'Internal Server Error', message: 'An unexpected error occurred.', requestId: req.id });
     }
     return res.status(status).json({
       error: status === 413 ? 'Payload Too Large' : 'Bad Request',
@@ -1172,5 +1218,5 @@ export function createApp(opts) {
     });
   });
 
-  return { app, store, db, drainWebhooks: () => Promise.all([...pendingDeliveries]) };
+  return { app, store, db, drainWebhooks: () => Promise.all([...pendingDeliveries]), setShuttingDown: () => { shuttingDown = true; } };
 }

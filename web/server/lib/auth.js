@@ -4,6 +4,9 @@
  * re-reads the user from the store on every request, so revocation and role changes apply immediately.
  */
 import crypto from 'node:crypto';
+import { promisify } from 'node:util';
+
+const scryptAsync = promisify(crypto.scrypt);
 
 const SCRYPT_PARAMS = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const COMMON_PASSWORDS = new Set(['password', 'password1', 'password123', 'qwerty123', '1234567890', 'letmein123', 'admin12345', 'welcome123']);
@@ -113,4 +116,56 @@ export function createLoginThrottle({ maxFails = 5, lockMs = 15 * 60 * 1000, now
       state.delete(email);
     }
   };
+}
+
+// ---------------------------------------------------------------------------
+// Async hashing. scryptSync blocks the event loop (~30 ms per hash, measured in Phase 13), so request
+// handlers use these instead: hashing runs in libuv's thread pool, concurrency is capped, and an overload
+// fails fast with 503 instead of queueing without bound.
+// ---------------------------------------------------------------------------
+const MAX_CONCURRENT_HASHES = 4;
+const MAX_QUEUED_HASHES = 200;
+let activeHashes = 0;
+const hashQueue = [];
+
+function acquireHashSlot() {
+  return new Promise((resolve, reject) => {
+    const grant = () => {
+      activeHashes += 1;
+      resolve(() => {
+        activeHashes -= 1;
+        const next = hashQueue.shift();
+        if (next) next();
+      });
+    };
+    if (activeHashes < MAX_CONCURRENT_HASHES) grant();
+    else if (hashQueue.length >= MAX_QUEUED_HASHES) reject(Object.assign(new Error('Too many concurrent password operations'), { status: 503 }));
+    else hashQueue.push(grant);
+  });
+}
+
+export async function hashPasswordAsync(password) {
+  const release = await acquireHashSlot();
+  try {
+    const salt = crypto.randomBytes(16);
+    const hash = await scryptAsync(String(password), salt, 64, SCRYPT_PARAMS);
+    return `scrypt$${salt.toString('base64')}$${hash.toString('base64')}`;
+  } finally {
+    release();
+  }
+}
+
+export async function verifyPasswordAsync(password, stored) {
+  const release = await acquireHashSlot();
+  try {
+    const [scheme, saltB64, hashB64] = String(stored).split('$');
+    if (scheme !== 'scrypt') return false;
+    const expected = Buffer.from(hashB64, 'base64');
+    const actual = await scryptAsync(String(password), Buffer.from(saltB64, 'base64'), expected.length, SCRYPT_PARAMS);
+    return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+  } catch {
+    return false;
+  } finally {
+    release();
+  }
 }

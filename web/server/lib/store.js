@@ -97,8 +97,19 @@ export function createStore({ dataDir, now = () => Date.now() }) {
     fs.renameSync(tmp, dbFile);
   }
 
+  /**
+   * Discard in-memory state and re-read the last successfully persisted database, in place (same object, so
+   * every reference stays valid). Used when a save fails so a request that was answered with an error cannot
+   * leave a half-applied change live (and later be persisted by an unrelated save).
+   */
+  function reload() {
+    const fresh = load();
+    for (const k of Object.keys(data)) delete data[k];
+    Object.assign(data, fresh);
+  }
+
   // Persist immediately so a brand-new database exists on disk.
   if (!fs.existsSync(dbFile)) save();
 
-  return { data, save, dbFile, backupDir, prevFile };
+  return { data, save, reload, dbFile, backupDir, prevFile };
 }
