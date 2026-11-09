@@ -113,6 +113,9 @@ class ApiService {
   post<T>(path: string, body: unknown = {}, headers?: Record<string, string>) {
     return this.request<T>('POST', path, body, headers);
   }
+  put<T>(path: string, body: unknown = {}) {
+    return this.request<T>('PUT', path, body);
+  }
   patch<T>(path: string, body: unknown = {}) {
     return this.request<T>('PATCH', path, body);
   }

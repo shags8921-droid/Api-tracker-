@@ -18,7 +18,7 @@ export function createShim() {
         layers.push({ kind: 'use', prefix, fns: args.flat() });
       }
     };
-    for (const m of ['get', 'post', 'patch', 'delete']) {
+    for (const m of ['get', 'post', 'put', 'patch', 'delete']) {
       app[m] = (p, ...fns) => layers.push({ kind: 'route', method: m.toUpperCase(), path: p, fns: fns.flat() });
     }
     app.handle = (reqIn) => new Promise((resolve) => {
@@ -28,7 +28,7 @@ export function createShim() {
       const req = Object.assign(new EventEmitter(), {
         method: reqIn.method || 'GET', url, originalUrl: url, path: pathOnly, query, params: {},
         headers: Object.fromEntries(Object.entries(reqIn.headers || {}).map(([k, v]) => [k.toLowerCase(), v])),
-        body: reqIn.body, ip: reqIn.ip || '127.0.0.1', secure: false
+        body: reqIn.body, rawBody: reqIn.rawBody, ip: reqIn.ip || '127.0.0.1', secure: false
       });
       const headers = {};
       const res = Object.assign(new EventEmitter(), {

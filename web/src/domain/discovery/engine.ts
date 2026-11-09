@@ -138,6 +138,11 @@ export class WebsiteDiscoveryEngine {
       }
     }
 
+    if (!isSandbox) {
+      return this.buildLiveResult(config, liveProbeResults, stages, logs, appendLog);
+    }
+    appendLog('DEMO', 'DEMO MODE: this sandbox run uses scripted sample data. Nothing below was read from a real website.', 'warn');
+
     // 1. HEALTH
     stages[0].status = 'IN_PROGRESS';
     appendLog('HEALTH', `Pinging ${config.url}/api/v1/integration/health with HTTPS verification`);
@@ -317,6 +322,78 @@ export class WebsiteDiscoveryEngine {
       coverageReport,
       rawLogs: logs
     };
+  }
+
+  /**
+   * Honest discovery for real (non-sandbox) sites: only what the backend probe actually observed is reported.
+   * Stages that need a platform connector (products, orders, pages, dashboards...) are SKIPPED, never faked.
+   */
+  private buildLiveResult(
+    config: WebsiteConfig,
+    probe: any,
+    stages: DiscoveryStageItem[],
+    logs: DiscoveryExecutionResult['rawLogs'],
+    appendLog: (code: string, msg: string, level?: 'info' | 'warn' | 'error') => void
+  ): DiscoveryExecutionResult {
+    const skipped = 'Not performed: requires a platform connector and site authorisation (WooCommerce connector in development; Shopify and custom APIs not yet supported).';
+    const setStage = (i: number, status: DiscoveryStageItem['status'], details: string, latencyMs?: number) => {
+      stages[i].status = status;
+      stages[i].details = details;
+      if (latencyMs !== undefined) stages[i].latencyMs = latencyMs;
+    };
+    if (!probe) {
+      setStage(0, 'FAILED', 'The backend probe could not be completed, so nothing about this site was verified.');
+      for (let i = 1; i < stages.length; i++) setStage(i, 'SKIPPED', 'Not performed because the probe did not complete.');
+    } else {
+      setStage(0, probe.healthFound ? 'COMPLETED' : 'WARNING',
+        probe.healthFound ? 'Health endpoint responded successfully.' : `No health endpoint found (${probe.details || 'no details'}).`, probe.latencyMs);
+      setStage(1, probe.manifestFound ? 'COMPLETED' : 'WARNING', probe.manifestFound ? 'Integration manifest found (contents not yet interpreted).' : 'No integration manifest found.');
+      setStage(2, probe.openApiFound ? 'COMPLETED' : 'WARNING',
+        probe.openApiFound ? `OpenAPI document found: ${probe.endpoints?.length ?? 0} operation(s) listed.` : 'No OpenAPI document found.');
+      for (let i = 3; i < stages.length; i++) setStage(i, 'SKIPPED', skipped);
+      if (stages[5]) setStage(5, probe.sitemapFound ? 'WARNING' : 'SKIPPED', probe.sitemapFound ? 'sitemap.xml exists but its pages have not been read.' : skipped);
+    }
+    appendLog('SUMMARY', 'Only reachability, manifest, OpenAPI and sitemap presence were checked. Products, orders, pages and dashboards were NOT discovered.', 'warn');
+
+    const endpoints: any[] = probe?.endpoints ?? [];
+    const features: DiscoveredFeature[] = endpoints.map((ep: any, idx: number) => {
+      const isOwner = /admin|users|security/.test(ep.path);
+      const isDestructive = ep.method === 'DELETE' || /revoke|delete/.test(ep.path);
+      return {
+        id: `feat_live_${idx}_${Date.now().toString(36)}`,
+        name: ep.summary || `${ep.method} ${ep.path}`,
+        description: `Endpoint ${ep.method} ${ep.path} listed in the site's OpenAPI document (not yet called or verified).`,
+        hubId: isOwner ? 'hub_owner' : 'hub_manager',
+        route: ep.path,
+        uiStructure: {
+          componentType: 'InteractiveCardView', hasForm: false, hasTable: false, hasCanvas: false, formFields: [],
+          buttons: []
+        },
+        interactions: [],
+        apiOperations: [{ method: ep.method, endpoint: ep.path, description: ep.summary || 'Listed endpoint', parameters: [], verified: false }],
+        permissions: [],
+        businessRules: [],
+        assets: [],
+        dependencies: [],
+        discoverySource: 'OPENAPI_SPEC',
+        verificationStatus: 'UNVERIFIED',
+        implementationStatus: 'NEEDS_CONFIGURATION',
+        chosenOption: 'NATIVE_WEB',
+        confidenceScore: 30,
+        isDestructive,
+        lastVerified: 'Listed in OpenAPI only; not called'
+      } as DiscoveredFeature;
+    });
+    const done = stages.filter((s) => s.status === 'COMPLETED').length;
+    const coverageReport: TransparentCoverageReport = {
+      pagesDiscovered: 0, totalPagesExpected: null, featuresDiscovered: features.length, componentsVerified: 0,
+      apiOperationsVerified: 0, workflowsIdentified: 0, permissionsMapped: 0, assetsIdentified: 0,
+      inaccessibleCount: 0, undocumentedCount: 0, nativeReadyCount: 0, webViewFallbackCount: 0,
+      needsConfigCount: features.length, unavailableCount: 0,
+      overallCompletenessPct: Math.round((done / stages.length) * 100), isExhaustiveEvidenceSupplied: false,
+      confidenceReasoning: `${done} of ${stages.length} discovery stages produced evidence. The rest were skipped, not simulated.`
+    };
+    return { features, pages: [], workflows: [], assets: [], stages, coverageReport, rawLogs: logs };
   }
 
   private generateSampleFeatures(config: WebsiteConfig): DiscoveredFeature[] {

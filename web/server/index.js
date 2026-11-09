@@ -13,6 +13,7 @@
  *   DEMO_PASSWORD              password for demo accounts (random and logged once if unset)
  *   GEMINI_API_KEY             optional; enables model-backed assistant answers (falls back to rule-based)
  *   GEMINI_MODEL               optional model id (default gemini-2.5-flash)
+ *   SYNC_INTERVAL_MS           polling-sync interval for connected websites (default 900000)
  *   ALLOW_SIMULATED_PAYMENTS=1 allow fake payments for local development (refused in production)
  */
 import path from 'node:path';
@@ -66,6 +67,13 @@ const port = Number(env.PORT) || 3001;
 const server = instance.app.listen(port, () => {
   console.log(`SitePulse AI server listening on :${port} (${production ? 'production' : 'development'})`);
 });
+
+// Polling fallback for connected websites (webhooks are the fast path; this catches missed events). Failing sites back off.
+const SYNC_INTERVAL_MS = Number(env.SYNC_INTERVAL_MS) || 15 * 60_000;
+const syncTimer = setInterval(() => {
+  instance.runScheduledSync().catch((e) => console.error(`[sync] scheduled run failed: ${e.message}`));
+}, SYNC_INTERVAL_MS);
+syncTimer.unref();
 
 let stopping = false;
 const shutdown = (signal) => {

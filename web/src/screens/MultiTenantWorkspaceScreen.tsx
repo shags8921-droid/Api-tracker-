@@ -252,7 +252,7 @@ export const MultiTenantWorkspaceScreen: React.FC<Props> = ({
               websites: '25 Websites',
               users: '50 Team Members',
               ai: '25,000 AI Requests / mo',
-              support: 'Dedicated Technical SLA'
+              support: 'Priority support (no SLA yet)'
             }
           ].map((plan, i) => (
             <div

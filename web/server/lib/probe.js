@@ -86,3 +86,48 @@ export function safeGet(origin, pathName, headers = {}, { timeoutMs = 3500, maxB
     req.end();
   });
 }
+
+/**
+ * Generic SSRF-safe HTTPS request for connectors (any method, optional JSON body, response headers returned).
+ * Same guarantees as safeGet: connect-time address validation, no redirects, size/time limits.
+ * Credentials travel only in the headers the caller passes; this function never logs them.
+ */
+export function safeRequest({ method = 'GET', origin, path: pathName, headers = {}, body, timeoutMs = 8000, maxBytes = 2_000_000 }) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    let settled = false;
+    const done = (v) => {
+      if (!settled) {
+        settled = true;
+        resolve({ latency: Date.now() - start, ...v });
+      }
+    };
+    const payload = body === undefined ? null : Buffer.from(JSON.stringify(body));
+    const h = { Accept: 'application/json', ...headers };
+    if (payload) { h['Content-Type'] = 'application/json'; h['Content-Length'] = payload.length; }
+    let req;
+    try {
+      req = https.request(`${origin}${pathName}`, { method, headers: h, lookup: safeLookup, timeout: timeoutMs }, (res) => {
+        const chunks = [];
+        let size = 0;
+        res.on('data', (c) => {
+          size += c.length;
+          if (size > maxBytes) { req.destroy(); return done({ ok: false, status: res.statusCode, headers: res.headers, error: 'Response too large' }); }
+          chunks.push(c);
+        });
+        res.on('end', () => {
+          let json = null;
+          try { json = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { json = null; }
+          done({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, headers: res.headers, json });
+        });
+        res.on('error', (e) => done({ ok: false, status: 0, error: e.message }));
+      });
+    } catch (e) {
+      return done({ ok: false, status: 0, error: e.message });
+    }
+    req.on('timeout', () => { req.destroy(); done({ ok: false, status: 0, error: 'Timed out' }); });
+    req.on('error', (e) => done({ ok: false, status: 0, error: e.code === 'EBLOCKED' ? 'Blocked: private address' : e.message }));
+    if (payload) req.write(payload);
+    req.end();
+  });
+}

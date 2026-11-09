@@ -24,7 +24,7 @@ export class StoreCorruptError extends Error {
 export const SCHEMA_VERSION = 6;
 const COLLECTIONS = [
   'organisations', 'users', 'websites', 'orders', 'catalog', 'webhooks', 'backups',
-  'auditLogs', 'transactions', 'supportTickets', 'notifications', 'emailOutbox', 'uploads', 'webhookDeliveries'
+  'auditLogs', 'transactions', 'supportTickets', 'notifications', 'emailOutbox', 'uploads', 'webhookDeliveries', 'inboundEvents'
 ];
 
 export function createStore({ dataDir, now = () => Date.now() }) {

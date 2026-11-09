@@ -4,31 +4,31 @@
 export const PLANS = [
   {
     id: 'plan_free', tier: 'FREE', name: 'Evaluation Sandbox',
-    tagline: 'Automatic website discovery and feature feasibility testing',
+    tagline: 'Try the workspace and check a website\'s reachability',
     monthlyUsd: 0, annualUsd: 0, monthlyNpr: 0, annualNpr: 0,
-    features: ['1 Connected Website', '2 Workspace Team Members', '250 AI Queries / mo', 'Basic Feature Discovery', 'Read-Only Hub Feasibility'],
+    features: ['1 Connected Website', '2 Workspace Team Members', '250 AI Queries / mo', 'Connection reachability check', 'Workspace hubs with demo data'],
     limits: { maxWebsites: 1, maxUsers: 2, monthlyAiRequests: 250, storageMb: 100, webhooksEnabled: false, advancedReports: false, dedicatedSupport: false }
   },
   {
     id: 'plan_starter', tier: 'STARTER', name: 'Growth Starter',
-    tagline: 'Small business operations with online store integration',
+    tagline: 'Small business workspace; store connectors are being rolled out',
     monthlyUsd: 49, annualUsd: 470, monthlyNpr: 6500, annualNpr: 62400,
-    features: ['2 Connected Websites', '5 Team Members', '1,000 AI Queries / mo', 'Full Hub Replication', 'Order Dispatch & Inventory Alerts'],
+    features: ['2 Connected Websites', '5 Team Members', '1,000 AI Queries / mo', 'WooCommerce connector (in development)', 'Workspace order & stock tracking'],
     limits: { maxWebsites: 2, maxUsers: 5, monthlyAiRequests: 1000, storageMb: 256, webhooksEnabled: true, advancedReports: false, dedicatedSupport: false },
     isPopular: true
   },
   {
     id: 'plan_pro', tier: 'PROFESSIONAL', name: 'Commercial Pro',
-    tagline: 'Multi-channel enterprises with real-time sync & AI actions',
+    tagline: 'Multiple websites, team access and signed webhooks',
     monthlyUsd: 149, annualUsd: 1430, monthlyNpr: 19800, annualNpr: 190000,
-    features: ['5 Connected Websites', '15 Team Members', '5,000 AI Queries / mo', 'Voice Assistant Integration', 'Full Webhook Event Relay', 'Custom Business Reports'],
+    features: ['5 Connected Websites', '15 Team Members', '5,000 AI Queries / mo', 'Voice input (browser-based)', 'Signed outbound webhooks', 'Custom Business Reports'],
     limits: { maxWebsites: 5, maxUsers: 15, monthlyAiRequests: 5000, storageMb: 1024, webhooksEnabled: true, advancedReports: true, dedicatedSupport: true }
   },
   {
     id: 'plan_business', tier: 'BUSINESS', name: 'Scale Enterprise',
-    tagline: 'High-volume distributed operations across platforms',
+    tagline: 'Higher limits for larger teams and many websites',
     monthlyUsd: 399, annualUsd: 3830, monthlyNpr: 53000, annualNpr: 508800,
-    features: ['25 Connected Websites', '50 Team Members', '25,000 AI Queries / mo', 'Dedicated Technical SLA', 'Continuous Idempotent Sync', 'Enterprise Multi-Role Hierarchy'],
+    features: ['25 Connected Websites', '50 Team Members', '25,000 AI Queries / mo', 'Priority support (no SLA yet)', 'Server-side sync (in development)', 'Owner & Manager roles'],
     limits: { maxWebsites: 25, maxUsers: 50, monthlyAiRequests: 25000, storageMb: 5120, webhooksEnabled: true, advancedReports: true, dedicatedSupport: true }
   }
 ];

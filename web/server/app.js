@@ -13,7 +13,9 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { createStore } from './lib/store.js';
-import { safeGet } from './lib/probe.js';
+import { safeGet, safeRequest } from './lib/probe.js';
+import { createConnectors, SUPPORTED_PLATFORMS } from './lib/connectors/index.js';
+import { ConnectorError, normalizeProduct, normalizeOrder, mapOrderStatus } from './lib/connectors/woocommerce.js';
 import { createGeminiClient } from './lib/ai.js';
 import { deliverWithRetry, safePost } from './lib/webhooks.js';
 import { decryptSecret } from './lib/security.js';
@@ -49,7 +51,7 @@ export function createApp(opts) {
     express, dataDir, authSecret, distDir = null, now = () => Date.now(),
     allowedOrigins = [], production = false, demo = false, demoPassword = null,
     allowSimulatedPayments = false, platformAdminEmails = [], trustProxy = false,
-    gatewayVerifiers = {}, logger = console, rateLimits = {}, probeGet = safeGet,
+    gatewayVerifiers = {}, logger = console, rateLimits = {}, probeGet = safeGet, connectorHttp = safeRequest,
     webhookPost = safePost, webhookDelaysMs = [1000, 5000, 25000],
     aiClient = createGeminiClient({ apiKey: opts.geminiApiKey, model: opts.geminiModel })
   } = opts;
@@ -204,7 +206,8 @@ export function createApp(opts) {
   // ------------------------------------------------------------------ middleware
   app.use(securityHeaders);
   app.use('/api', corsPolicy({ allowedOrigins }));
-  const jsonSmall = express.json({ limit: '1mb' });
+  const keepRaw = (req, res, buf) => { req.rawBody = buf; }; // needed to verify inbound webhook signatures
+  const jsonSmall = express.json({ limit: '1mb', verify: keepRaw });
   const jsonUpload = express.json({ limit: '9mb' });
   app.use('/api', (req, res, next) =>
     (req.method === 'POST' && String(req.originalUrl || req.url).split('?')[0] === '/api/v1/uploads' ? jsonUpload : jsonSmall)(req, res, next));
@@ -372,6 +375,7 @@ export function createApp(opts) {
   app.use(`${api}`, (req, res, next) => {
     const p = String(req.originalUrl || req.url).split('?')[0];
     if (p === `${api}/health` || p === `${api}/ready` || p === `${api}/commercial/plans`) return next();
+    if (req.method === 'POST' && p.startsWith(`${api}/inbound/woocommerce/`)) return next(); // authenticated by HMAC signature instead of a session
     return authenticate(req, res, next);
   });
 
@@ -580,7 +584,7 @@ export function createApp(opts) {
       exportMetadata: { generatedAt: new Date(now()).toISOString(), tenantId: orgId, format: 'JSON (Self-Contained Data Archive)' },
       organisation: publicOrg(orgById(orgId)),
       users: scoped('users').map((u) => ({ id: u.id, name: u.name, email: u.email, role: u.role, status: u.status, createdAt: u.createdAt })),
-      websites: scoped('websites'),
+      websites: scoped('websites').map(publicSite),
       orders: scoped('orders'),
       catalog: scoped('catalog'),
       webhooks: scoped('webhooks').map(({ secretEnc, ...w }) => ({ ...w, secret: undefined })),
@@ -635,7 +639,24 @@ export function createApp(opts) {
   // ------------------------------------------------------------------ websites
   const sitesOf = (req) => db.websites.filter((w) => w.orgId === req.auth.orgId);
 
-  app.get(`${api}/websites`, (req, res) => res.json(sitesOf(req)));
+  // ---- connectors: credential vault + remote access. Credentials are encrypted at rest and never returned by any API.
+  const connectors = createConnectors({ http: connectorHttp });
+  const publicSite = (w) => {
+    const { credentialsEnc, webhookSecretEnc, ...rest } = w;
+    return { ...rest, hasCredentials: !!credentialsEnc, connection: w.connection || { status: 'NOT_CONNECTED' }, supportedPlatforms: SUPPORTED_PLATFORMS };
+  };
+  const siteOfOrg = (orgId, id) => db.websites.find((w) => w.id === id && w.orgId === orgId);
+  function remoteCtx(site) {
+    if (!site || site.connection?.status !== 'CONNECTED' || !site.credentialsEnc) return null;
+    const connector = connectors[site.platform];
+    const raw = decryptSecret(site.credentialsEnc, dataKey);
+    if (!connector || !raw) return null;
+    try { return { site, connector, creds: JSON.parse(raw), origin: new URL(site.url).origin }; } catch { return null; }
+  }
+  const remoteFailure = (res, e) => res.status(e instanceof ConnectorError ? e.status : 502).json({ error: 'Remote update failed', code: e.code || 'REMOTE_ERROR', message: redactSecrets(e.message), applied: false });
+  const syncing = new Set();
+
+  app.get(`${api}/websites`, (req, res) => res.json(sitesOf(req).map(publicSite)));
 
   app.post(`${api}/websites`, owner, wrap((req, res) => {
     const b = bodyOf(req);
@@ -655,7 +676,7 @@ export function createApp(opts) {
     db.websites.push(site);
     audit(req, 'FEATURE_CHANGE', 'Website connected', `Registered ${check.host}.`, 'SUCCESS', { websiteId: site.id });
     commit();
-    res.status(201).json(site);
+    res.status(201).json(publicSite(site));
   }));
 
   app.post(`${api}/websites/:id/switch`, wrap((req, res) => {
@@ -744,6 +765,8 @@ export function createApp(opts) {
     res.json(db.webhookDeliveries.filter((d) => d.orgId === req.auth.orgId).slice(0, 100));
   });
 
+  const needConfirm = (b) => b.confirm === true;
+
   // ------------------------------------------------------------------ manager hub: orders
   const ordersOf = (req) => db.orders.filter((o) => o.orgId === req.auth.orgId);
 
@@ -758,7 +781,7 @@ export function createApp(opts) {
     res.json(result);
   });
 
-  app.post(`${api}/orders/:id/fulfill`, idempotent, wrap((req, res) => {
+  app.post(`${api}/orders/:id/fulfill`, idempotent, wrap(async (req, res) => {
     const order = ordersOf(req).find((o) => o.id === req.params.id);
     if (!order) return res.status(404).json({ error: 'Order not found' });
     if (!['NEW', 'PROCESSING'].includes(order.status)) return res.status(409).json({ error: `Order is already ${order.status}` });
@@ -766,12 +789,20 @@ export function createApp(opts) {
     if (!tracking || !/^[A-Za-z0-9._-]+$/.test(tracking)) {
       return res.status(400).json({ error: 'A tracking number (letters, digits, . _ -) is required' });
     }
+    const remote = order.websiteId && order.remoteId;
+    if (remote) {
+      if (!needConfirm(bodyOf(req))) return res.status(400).json({ error: 'CONFIRMATION_REQUIRED', message: 'Completing an order on a connected website requires confirm: true.' });
+      const ctx = remoteCtx(siteOfOrg(req.auth.orgId, order.websiteId));
+      if (!ctx) return res.status(409).json({ error: 'Website not connected', message: 'This website is disconnected, so the order was not changed.', applied: false });
+      try { await ctx.connector.markOrderCompleted(ctx.origin, ctx.creds, order.remoteId, `Tracking number: ${tracking}`); }
+      catch (e) { audit(req, 'FEATURE_CHANGE', 'Remote order update failed', `Order ${order.id}: ${e.code || 'error'}`, 'FAILED', { websiteId: order.websiteId }); commit(); return remoteFailure(res, e); }
+    }
     order.status = 'SHIPPED';
     order.trackingNumber = tracking;
     audit(req, 'FEATURE_CHANGE', 'Order dispatched', `Order ${order.id} marked SHIPPED (${tracking}).`);
     commit();
     dispatchEvent(order.orgId, 'order.fulfilled', { orderId: order.id, trackingNumber: tracking });
-    res.json({ success: true, order });
+    res.json({ success: true, order, remoteConfirmed: !!remote, workspaceOnly: !remote });
   }));
 
   // ------------------------------------------------------------------ manager hub: catalog
@@ -812,19 +843,143 @@ export function createApp(opts) {
     res.status(201).json(item);
   }));
 
-  app.patch(`${api}/catalog/items/:id/stock`, wrap((req, res) => {
+  app.patch(`${api}/catalog/items/:id/stock`, wrap(async (req, res) => {
     const item = catalogOf(req).find((i) => i.id === req.params.id);
     if (!item) return res.status(404).json({ error: 'Catalog item not found' });
-    const raw = bodyOf(req).stock;
+    const b = bodyOf(req);
+    const raw = b.stock;
     const stock = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : raw;
     if (!nonNegInt(stock)) return res.status(400).json({ error: 'stock must be a non-negative integer' });
     const before = item.stock;
+    const remote = item.websiteId && item.remoteId;
+    if (remote) {
+      if (!needConfirm(b)) return res.status(400).json({ error: 'CONFIRMATION_REQUIRED', message: 'Changing stock on a connected website requires confirm: true.' });
+      const ctx = remoteCtx(siteOfOrg(req.auth.orgId, item.websiteId));
+      if (!ctx) return res.status(409).json({ error: 'Website not connected', message: 'This website is disconnected, so the change was not applied.', applied: false });
+      try { await ctx.connector.updateStock(ctx.origin, ctx.creds, item.remoteId, stock); }
+      catch (e) { audit(req, 'FEATURE_CHANGE', 'Remote stock update failed', `${item.sku}: ${e.code || 'error'}`, 'FAILED', { websiteId: item.websiteId }); commit(); return remoteFailure(res, e); }
+    }
     item.stock = stock;
     item.status = stockStatus(item);
-    audit(req, 'FEATURE_CHANGE', 'Stock updated', `${item.sku}: ${before} → ${stock}.`);
+    audit(req, 'FEATURE_CHANGE', 'Stock updated', `${item.sku}: ${before} → ${stock}${remote ? ' (confirmed on website)' : ' (SitePulse workspace only)'}.`);
     commit();
-    if (item.status !== 'IN_STOCK') dispatchEvent(item.orgId, 'catalog.stock_low', { sku: item.sku, stock: item.stock, minThreshold: item.minThreshold });
-    res.json({ success: true, item });
+    if (item.status !== 'IN_STOCK') dispatchEvent(item.orgId, 'catalog.stock_low', { sku: item.sku, stock });
+    res.json({ success: true, item, remoteConfirmed: !!remote, workspaceOnly: !remote });
+  }));
+
+  async function doPriceUpdate(req, item, price, confirmed) {
+    const before = item.price;
+    const remote = item.websiteId && item.remoteId;
+    if (remote) {
+      if (!confirmed) return { status: 400, body: { error: 'CONFIRMATION_REQUIRED', message: 'Changing a price on a connected website requires confirm: true.' } };
+      const ctx = remoteCtx(siteOfOrg(req.auth.orgId, item.websiteId));
+      if (!ctx) return { status: 409, body: { error: 'Website not connected', message: 'This website is disconnected, so the change was not applied.', applied: false } };
+      try { await ctx.connector.updatePrice(ctx.origin, ctx.creds, item.remoteId, round(price)); }
+      catch (e) {
+        audit(req, 'FEATURE_CHANGE', 'Remote price update failed', `${item.sku}: ${e.code || 'error'}`, 'FAILED', { websiteId: item.websiteId }); commit();
+        return { status: e instanceof ConnectorError ? e.status : 502, body: { error: 'Remote update failed', code: e.code || 'REMOTE_ERROR', message: redactSecrets(e.message), applied: false } };
+      }
+    }
+    item.price = round(price);
+    audit(req, 'FEATURE_CHANGE', 'Price updated', `${item.sku}: ${before} → ${item.price}${remote ? ' (confirmed on website)' : ' (SitePulse workspace only)'}.`);
+    commit();
+    return { status: 200, body: { success: true, item, remoteConfirmed: !!remote, workspaceOnly: !remote } };
+  }
+  const parsePrice = (v) => {
+    const price = typeof v === 'string' && v.trim() !== '' ? Number(v) : v;
+    return typeof price === 'number' && Number.isFinite(price) && price >= 0 && price <= 1e9 ? price : null;
+  };
+
+  app.patch(`${api}/catalog/items/:id/price`, owner, wrap(async (req, res) => {
+    const item = catalogOf(req).find((i) => i.id === req.params.id);
+    if (!item) return res.status(404).json({ error: 'Catalog item not found' });
+    const b = bodyOf(req);
+    const price = parsePrice(b.price);
+    if (price === null) return res.status(400).json({ error: 'price must be a non-negative number' });
+    const r = await doPriceUpdate(req, item, price, needConfirm(b));
+    res.status(r.status).json(r.body);
+  }));
+
+  // ---- capability manifest: what SitePulse can REALLY do for this website right now (derived, never invented)
+  const WOO_CAPABILITIES = [
+    { id: 'products.read', label: 'View products, prices, stock, images', hub: 'OWNER', support: 'SUPPORTED' },
+    { id: 'products.price.write', label: 'Change product prices', hub: 'OWNER', support: 'SUPPORTED', needs: 'API key with write permission' },
+    { id: 'products.stock.write', label: 'Change stock quantities', hub: 'MANAGER', support: 'SUPPORTED', needs: 'API key with write permission' },
+    { id: 'products.description.write', label: 'Edit product descriptions', hub: 'OWNER', support: 'NOT_IMPLEMENTED' },
+    { id: 'products.images.write', label: 'Manage product images', hub: 'OWNER', support: 'NOT_IMPLEMENTED' },
+    { id: 'categories.read', label: 'View categories', hub: 'OWNER', support: 'SUPPORTED' },
+    { id: 'categories.write', label: 'Edit categories', hub: 'OWNER', support: 'NOT_IMPLEMENTED' },
+    { id: 'pages.read', label: 'List pages', hub: 'OWNER', support: 'SUPPORTED' },
+    { id: 'pages.write', label: 'Edit pages / banners / content', hub: 'OWNER', support: 'NOT_IMPLEMENTED' },
+    { id: 'orders.read', label: 'View orders and customer names', hub: 'MANAGER', support: 'SUPPORTED' },
+    { id: 'orders.fulfil', label: 'Mark orders completed (tracking saved as a private note)', hub: 'MANAGER', support: 'SUPPORTED', needs: 'API key with write permission' },
+    { id: 'webhooks.inbound', label: 'Receive store changes by webhook', hub: 'SYSTEM', support: 'SUPPORTED', needs: 'Owner must add the webhook in WooCommerce' },
+    { id: 'sync.polling', label: 'Scheduled polling fallback', hub: 'SYSTEM', support: 'SUPPORTED' },
+    { id: 'dashboard.replication', label: 'Replicate the existing WordPress/WooCommerce admin', hub: 'OWNER', support: 'NOT_POSSIBLE', needs: 'The WP admin has no discoverable API; only the REST-exposed features above can be managed' }
+  ];
+  app.get(`${api}/websites/:id/manifest`, wrap((req, res) => {
+    const site = siteOfOrg(req.auth.orgId, req.params.id);
+    if (!site) return res.status(404).json({ error: 'Website not found' });
+    const connected = site.connection?.status === 'CONNECTED';
+    const mine = (c) => db[c].filter((r) => r.orgId === site.orgId && r.websiteId === site.id);
+    res.json({
+      websiteId: site.id, platform: site.platform || null, connection: publicSite(site).connection, apiHealth: site.apiHealth,
+      hubMode: connected ? 'NEW_HUB_FROM_REST_API' : 'NONE',
+      replicationNote: 'Existing admin dashboards are not copied. SitePulse recreates only the functions the store exposes through its authorised API.',
+      capabilities: connected && site.platform === 'woocommerce' ? WOO_CAPABILITIES : [],
+      synced: { products: mine('catalog').length, orders: mine('orders').length, lastSyncAt: site.connection?.lastSyncAt || null },
+      writePermissionVerified: !!site.connection?.writeVerified
+    });
+  }));
+
+  // ---- AI management: the model/parser only PROPOSES; the backend validates role and executes after explicit confirmation.
+  const proposals = new Map();
+  const norm = (t) => String(t || '').toLowerCase();
+  app.post(`${api}/ai/command`, aiLimiter, wrap((req, res) => {
+    const text = str(bodyOf(req).text, 400);
+    if (!text) return res.status(400).json({ error: 'text is required' });
+    const q = norm(text);
+    const items = catalogOf(req);
+    if (/low\s*(in\s*)?stock|running\s*low|out of stock/.test(q)) {
+      const low = items.filter((i) => i.stock <= i.minThreshold).map((i) => ({ id: i.id, name: i.name, sku: i.sku, stock: i.stock }));
+      return res.json({ kind: 'ANSWER', message: low.length ? `${low.length} product(s) are low or out of stock.` : 'No products are low in stock.', data: low });
+    }
+    if (/order/.test(q) && /(today|new|recent|pending|show|list)/.test(q)) {
+      const start = new Date(now()); start.setUTCHours(0, 0, 0, 0);
+      const today = /today/.test(q);
+      const list = ordersOf(req).filter((o) => !today || (o.placedAt && new Date(o.placedAt).getTime() >= start.getTime())).slice(0, 25)
+        .map((o) => ({ id: o.id, customer: o.customer, status: o.status, totalAmount: o.totalAmount }));
+      return res.json({ kind: 'ANSWER', message: `${list.length} order(s)${today ? ' today (UTC)' : ''}.`, data: list });
+    }
+    const pm = /(?:change|set|update|make)[^\d]*price[^\d]*?(?:to|=)\s*(?:rs\.?|npr|usd|\$)?\s*([\d][\d,]*(?:\.\d+)?)/.exec(q);
+    if (pm) {
+      if (req.auth.role !== 'OWNER') return res.status(403).json({ error: 'Forbidden', message: 'Only an owner can change prices.' });
+      const price = parsePrice(pm[1].replace(/,/g, ''));
+      const matches = items.filter((i) => q.includes(norm(i.name)) || q.includes(norm(i.sku)));
+      if (price === null) return res.status(400).json({ error: 'Could not read a valid price.' });
+      if (matches.length !== 1) return res.json({ kind: 'CLARIFY', message: matches.length ? 'More than one product matches. Please use the exact name or SKU.' : 'I could not find that product. Use its exact name or SKU.', data: matches.map((i) => ({ id: i.id, name: i.name, sku: i.sku })) });
+      const item = matches[0];
+      const id = randomId('prop');
+      proposals.set(id, { orgId: req.auth.orgId, userId: req.auth.userId, itemId: item.id, price, at: now() });
+      for (const [k, v] of proposals) if (now() - v.at > 300_000) proposals.delete(k);
+      return res.json({ kind: 'PROPOSAL', proposalId: id, action: 'UPDATE_PRICE', requiresConfirmation: true, expiresInSeconds: 300,
+        summary: `Change the price of "${item.name}" (${item.sku}) from ${item.price} to ${round(price)}${item.websiteId ? ' on the connected website' : ' (SitePulse workspace only)'}.`, nothingChangedYet: true });
+    }
+    if (/description|banner|image|photo|categor/.test(q) && /(update|change|edit|set)/.test(q)) {
+      return res.json({ kind: 'UNSUPPORTED', message: 'Editing descriptions, images, banners and categories is not implemented yet. Supported: prices, stock, order completion, and read-only questions.' });
+    }
+    return res.json({ kind: 'UNSUPPORTED', message: 'I can answer "low stock" and "today\'s orders" questions and propose price changes, e.g. "Change Shirt price to 999".' });
+  }));
+
+  app.post(`${api}/ai/command/:id/confirm`, owner, aiLimiter, wrap(async (req, res) => {
+    const prop = proposals.get(req.params.id);
+    if (!prop || prop.orgId !== req.auth.orgId || prop.userId !== req.auth.userId || now() - prop.at > 300_000) return res.status(404).json({ error: 'Proposal not found or expired' });
+    proposals.delete(req.params.id); // single use: prevents duplicate execution
+    const item = catalogOf(req).find((i) => i.id === prop.itemId);
+    if (!item) return res.status(404).json({ error: 'Product no longer exists' });
+    audit(req, 'FEATURE_CHANGE', 'AI-proposed price change confirmed', `${item.sku} → ${prop.price}`, 'INFO');
+    const r = await doPriceUpdate(req, item, prop.price, true);
+    res.status(r.status).json(r.body);
   }));
 
   // ------------------------------------------------------------------ backups (tenant-scoped, validated)
@@ -891,8 +1046,16 @@ export function createApp(opts) {
 
     // Reversible: capture the current state first. Only business data is restored; users, billing and audit history are untouched.
     writeSnapshot(req.auth.orgId, `Automatic snapshot before rollback to ${backupId}`, req.auth.userId);
+    // Credentials/connection state is never rolled back: a restored website keeps its CURRENT secrets (or none if disconnected).
+    const currentSites = new Map(db.websites.filter((w) => w.orgId === req.auth.orgId).map((w) => [w.id, w]));
     for (const c of SNAPSHOT_COLLECTIONS) {
       db[c] = db[c].filter((r) => r.orgId !== req.auth.orgId).concat(snapshot.data[c].map((r) => ({ ...r, orgId: req.auth.orgId })));
+    }
+    for (const w of db.websites.filter((x) => x.orgId === req.auth.orgId)) {
+      const cur = currentSites.get(w.id);
+      delete w.credentialsEnc; delete w.webhookSecretEnc;
+      if (cur) { for (const k of ['credentialsEnc', 'webhookSecretEnc', 'connection', 'platform']) if (cur[k] !== undefined) w[k] = cur[k]; }
+      else { delete w.connection; delete w.platform; }
     }
     audit(req, 'ROLLBACK', `Restored snapshot ${backupId}`, 'Business data reverted to the selected snapshot.', 'WARNING');
     commit();
@@ -1087,6 +1250,165 @@ export function createApp(opts) {
     });
   }));
 
+  // ------------------------------------------------------------------ connectors: connect, disconnect, sync, inbound webhooks
+  app.put(`${api}/websites/:id/credentials`, owner, probeLimiter, wrap(async (req, res) => {
+    const site = siteOfOrg(req.auth.orgId, req.params.id);
+    if (!site) return res.status(404).json({ error: 'Website not found' });
+    const b = bodyOf(req);
+    const platform = str(b.platform, 30).toLowerCase();
+    const connector = connectors[platform];
+    if (!connector) return res.status(400).json({ error: 'Unsupported platform', message: `Supported platforms: ${SUPPORTED_PLATFORMS.join(', ')}. Shopify and custom APIs are not available yet.` });
+    const consumerKey = str(b.consumerKey, 200);
+    const consumerSecret = str(b.consumerSecret, 200);
+    if (!/^ck_[A-Za-z0-9]{10,}$/.test(consumerKey) || !/^cs_[A-Za-z0-9]{10,}$/.test(consumerSecret)) {
+      return res.status(400).json({ error: 'Invalid credentials format', message: 'Provide the WooCommerce REST API consumer key (ck_…) and secret (cs_…).' });
+    }
+    const check = validatePublicUrl(site.url, { allowedHosts: [] });
+    if (!check.ok || !site.url.startsWith('https://')) return res.status(400).json({ error: 'HTTPS website required', message: 'Credentials are only sent to public HTTPS websites.' });
+    const origin = new URL(site.url).origin;
+    const creds = { consumerKey, consumerSecret };
+    const det = await connector.detect(origin);
+    if (!det.detected) return res.status(422).json({ error: 'Platform not detected', message: `${origin} does not look like a WooCommerce store with the REST API enabled (${det.reason || 'wc/v3 namespace missing'}).` });
+    try { await connector.verify(origin, creds); }
+    catch (e) { audit(req, 'FEATURE_CHANGE', 'Website credential check failed', `${check.host}: ${e.code || 'error'}`, 'FAILED', { websiteId: site.id }); commit(); return res.status(422).json({ error: 'Credentials rejected', code: e.code, message: redactSecrets(e.message) }); }
+    const live = siteOfOrg(req.auth.orgId, req.params.id);
+    if (!live) return res.status(404).json({ error: 'Website not found' });
+    live.platform = platform;
+    live.credentialsEnc = encryptSecret(JSON.stringify(creds), dataKey);
+    let webhookSecret = null;
+    if (!live.webhookSecretEnc) { webhookSecret = `whsec_${crypto.randomBytes(24).toString('base64url')}`; live.webhookSecretEnc = encryptSecret(webhookSecret, dataKey); }
+    live.connection = { status: 'CONNECTED', verifiedAt: now(), writeVerified: false, lastSyncAt: live.connection?.lastSyncAt || null, lastError: null, siteName: det.siteName || null };
+    live.apiHealth = 'HEALTHY';
+    audit(req, 'FEATURE_CHANGE', 'Website connected', `${check.host} connected via ${platform} (read access verified; write permission unverified until first write).`, 'SUCCESS', { websiteId: live.id });
+    commit();
+    res.json({
+      site: publicSite(live),
+      inboundWebhook: { path: `${api}/inbound/woocommerce/${live.id}`, secret: webhookSecret, note: webhookSecret ? 'Shown once. Add it as a WooCommerce webhook secret (topics: order.created, order.updated, product.updated).' : 'Secret was already issued earlier and cannot be shown again.' }
+    });
+  }));
+
+  // Disconnect: credentials are destroyed and the site can no longer be read or written. Records are kept (never deleted).
+  app.delete(`${api}/websites/:id`, owner, wrap((req, res) => {
+    const site = siteOfOrg(req.auth.orgId, req.params.id);
+    if (!site) return res.status(404).json({ error: 'Website not found' });
+    delete site.credentialsEnc;
+    delete site.webhookSecretEnc;
+    site.connection = { status: 'DISCONNECTED', disconnectedAt: now(), lastError: null };
+    site.apiHealth = 'UNKNOWN';
+    site.isActive = false;
+    audit(req, 'FEATURE_CHANGE', 'Website disconnected', `${site.url} disconnected; stored credentials destroyed. Synced records were kept.`, 'SUCCESS', { websiteId: site.id });
+    commit();
+    res.json({ success: true, site: publicSite(site) });
+  }));
+
+  const WC_PENDING_TOPICS = new Set(['order.created', 'order.updated', 'product.created', 'product.updated']);
+  function upsertProduct(site, p) {
+    let item = db.catalog.find((i) => i.orgId === site.orgId && i.websiteId === site.id && i.remoteId === p.remoteId);
+    if (!item) {
+      item = { id: `SKU-${crypto.randomBytes(4).toString('hex').toUpperCase()}`, orgId: site.orgId, websiteId: site.id, remoteId: p.remoteId, minThreshold: 5 };
+      db.catalog.push(item);
+    }
+    Object.assign(item, { name: p.name, sku: p.sku, category: p.category, price: round(p.price), stock: p.stock ?? 0, stockManaged: p.stock !== null, imageUrl: p.imageUrl });
+    item.status = stockStatus(item);
+    return item;
+  }
+  function upsertOrder(site, o) {
+    let order = db.orders.find((x) => x.orgId === site.orgId && x.websiteId === site.id && x.remoteId === o.remoteId);
+    const isNew = !order;
+    if (!order) {
+      order = { id: `WC-${site.id.slice(-6)}-${o.remoteId}`, orgId: site.orgId, websiteId: site.id, remoteId: o.remoteId, trackingNumber: null, shippingAddress: '' };
+      db.orders.push(order);
+    }
+    Object.assign(order, { customer: o.customer, itemsCount: o.itemsCount, totalAmount: round(o.totalAmount), status: mapOrderStatus(o.remoteStatus), remoteStatus: o.remoteStatus, placedAt: o.placedAt || order.placedAt || new Date(now()).toISOString() });
+    return { order, isNew };
+  }
+
+  async function syncSite(site) {
+    if (syncing.has(site.id)) throw new ConnectorError('A sync is already running for this website.', { code: 'SYNC_IN_PROGRESS', status: 409 });
+    const ctx = remoteCtx(site);
+    if (!ctx) throw new ConnectorError('This website is not connected.', { code: 'NOT_CONNECTED', status: 409 });
+    syncing.add(site.id);
+    try {
+      const [cat, ord] = await Promise.all([ctx.connector.readCatalog(ctx.origin, ctx.creds), ctx.connector.readOrders(ctx.origin, ctx.creds)]);
+      if (site.connection?.status !== 'CONNECTED') throw new ConnectorError('Website was disconnected during the sync; results discarded.', { code: 'DISCONNECTED', status: 409 });
+      for (const p of cat.products) upsertProduct(site, p);
+      for (const o of ord.orders) upsertOrder(site, o);
+      site.connection.lastSyncAt = now(); site.connection.lastError = null; site.connection.failures = 0; site.connection.nextSyncAt = null;
+      site.apiHealth = 'HEALTHY';
+      commit();
+      return { products: cat.products.length, categories: cat.categories.length, orders: ord.orders.length, truncated: !!(cat.truncated || ord.truncated) };
+    } catch (e) {
+      if (site.connection?.status === 'CONNECTED') {
+        site.connection.lastError = redactSecrets(e.message); site.connection.failures = (site.connection.failures || 0) + 1;
+        site.connection.nextSyncAt = now() + Math.min(6 * 3600_000, 60_000 * 2 ** site.connection.failures);
+        site.apiHealth = 'DEGRADED';
+        try { commit(); } catch { /* reported below */ }
+      }
+      throw e;
+    } finally { syncing.delete(site.id); }
+  }
+
+  app.post(`${api}/websites/:id/sync`, requireRole('OWNER', 'MANAGER'), probeLimiter, wrap(async (req, res) => {
+    const site = siteOfOrg(req.auth.orgId, req.params.id);
+    if (!site) return res.status(404).json({ error: 'Website not found' });
+    try {
+      const r = await syncSite(site);
+      audit(req, 'FEATURE_CHANGE', 'Website synchronised', `${r.products} products, ${r.orders} orders read from ${site.url}${r.truncated ? ' (truncated at the page limit)' : ''}.`, 'SUCCESS', { websiteId: site.id });
+      commit();
+      res.json({ success: true, ...r });
+    } catch (e) {
+      audit(req, 'FEATURE_CHANGE', 'Website sync failed', `${site.url}: ${e.code || 'error'}`, 'FAILED', { websiteId: site.id });
+      try { commit(); } catch { /* ignore */ }
+      res.status(e.status || 502).json({ success: false, error: 'Sync failed', code: e.code || 'REMOTE_ERROR', message: redactSecrets(e.message) });
+    }
+  }));
+
+  // Inbound WooCommerce webhooks: authenticated by HMAC-SHA256 of the raw body (base64), deduplicated by delivery id.
+  app.post(`${api}/inbound/woocommerce/:siteId`, wrap((req, res) => {
+    const site = db.websites.find((w) => w.id === req.params.siteId);
+    const ctx = site && site.connection?.status === 'CONNECTED' && site.webhookSecretEnc ? site : null;
+    if (!ctx) return res.status(404).json({ error: 'Not found' });
+    const secret = decryptSecret(site.webhookSecretEnc, dataKey);
+    const raw = req.rawBody;
+    if (!raw || !Buffer.isBuffer(raw)) return res.status(200).json({ received: true, processed: false }); // e.g. form-encoded ping: nothing to verify, nothing changed
+    const sig = Buffer.from(String(req.headers['x-wc-webhook-signature'] || ''), 'base64');
+    const expected = crypto.createHmac('sha256', secret).update(raw).digest();
+    if (sig.length !== expected.length || !crypto.timingSafeEqual(sig, expected)) {
+      audit(req, 'FEATURE_CHANGE', 'Inbound webhook rejected', 'Invalid signature.', 'FAILED', { orgId: site.orgId, websiteId: site.id });
+      commit();
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+    const eventId = `${site.id}:${String(req.headers['x-wc-webhook-delivery-id'] || crypto.createHash('sha256').update(raw).digest('hex'))}`;
+    if (db.inboundEvents.some((e) => e.id === eventId)) return res.status(200).json({ received: true, duplicate: true });
+    const topic = String(req.headers['x-wc-webhook-topic'] || '');
+    const payload = bodyOf(req);
+    let processed = false;
+    if (WC_PENDING_TOPICS.has(topic) && payload && payload.id !== undefined) {
+      if (topic.startsWith('order.')) {
+        const { order, isNew } = upsertOrder(site, normalizeOrder(payload));
+        if (isNew) dispatchEvent(site.orgId, 'order.created', { orderId: order.id, remoteId: order.remoteId });
+      } else {
+        const item = upsertProduct(site, normalizeProduct(payload));
+        if (item.status !== 'IN_STOCK') dispatchEvent(site.orgId, 'catalog.stock_low', { sku: item.sku, stock: item.stock });
+      }
+      processed = true;
+    }
+    db.inboundEvents.push({ id: eventId, orgId: site.orgId, websiteId: site.id, topic, at: now(), processed });
+    if (db.inboundEvents.length > 5000) db.inboundEvents.splice(0, db.inboundEvents.length - 5000);
+    commit();
+    res.status(200).json({ received: true, processed });
+  }));
+
+  /** Polling fallback: called on a timer by the bootstrap. Failing sites back off exponentially. */
+  async function runScheduledSync() {
+    const results = [];
+    for (const site of db.websites.filter((w) => w.connection?.status === 'CONNECTED' && (!w.connection.nextSyncAt || w.connection.nextSyncAt <= now()))) {
+      try { results.push({ siteId: site.id, ok: true, ...(await syncSite(site)) }); }
+      catch (e) { results.push({ siteId: site.id, ok: false, code: e.code || 'ERROR' }); }
+    }
+    return results;
+  }
+
   // ------------------------------------------------------------------ uploads (authenticated, typed, quota-limited)
   const UPLOAD_TYPES = {
     'image/png': { ext: 'png', sig: (b) => b.length > 8 && b[0] === 0x89 && b.toString('latin1', 1, 4) === 'PNG' },
@@ -1218,5 +1540,5 @@ export function createApp(opts) {
     });
   });
 
-  return { app, store, db, drainWebhooks: () => Promise.all([...pendingDeliveries]), setShuttingDown: () => { shuttingDown = true; } };
+  return { app, store, db, drainWebhooks: () => Promise.all([...pendingDeliveries]), setShuttingDown: () => { shuttingDown = true; }, runScheduledSync };
 }

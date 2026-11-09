@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { api } from '../services/api';
+import { ConnectedStoresPanel } from '../components/ConnectedStoresPanel';
 import {
   Link2,
   CheckCircle2,
@@ -52,19 +53,22 @@ export const ConnectWebsiteScreen: React.FC<Props> = ({
     setIsProbing(true);
     setProbeResult(null);
     try {
-      const { data } = await api.post<any>('/api/v1/discovery/probe', { targetUrl: websiteUrl });
+      const res = await api.post<any>('/api/v1/discovery/probe', { targetUrl: websiteUrl });
+      const d = res.data;
       setProbeResult({
         tested: true,
-        reachable: !!data.isReachable,
-        latencyMs: data.latencyMs || 0,
-        healthEndpointAvailable: !!data.healthFound,
-        tlsVerified: isHttps && !!data.isReachable,
-        message: data.details || (data.isReachable ? 'Host responded.' : 'Host did not respond.')
+        reachable: !!d.isReachable,
+        latencyMs: d.latencyMs || 0,
+        healthEndpointAvailable: !!d.healthFound,
+        tlsVerified: isHttps,
+        message: d.isReachable
+          ? `Host responded. Health endpoint: ${d.healthFound ? 'found' : 'not found'}; OpenAPI: ${d.openApiFound ? 'found' : 'not found'}. This does not confirm that the site can be managed.`
+          : `Could not reach the host. ${d.details || ''}`
       });
     } catch (err: any) {
       setProbeResult({
-        tested: true, reachable: false, latencyMs: 0, healthEndpointAvailable: false, tlsVerified: false,
-        message: err?.message || 'Probe failed'
+        tested: true, reachable: false, latencyMs: 0, healthEndpointAvailable: false, tlsVerified: isHttps,
+        message: err?.message || 'The reachability check failed.'
       });
     }
     setIsProbing(false);
@@ -170,6 +174,8 @@ export const ConnectWebsiteScreen: React.FC<Props> = ({
           </button>
         </div>
       </div>
+
+      <ConnectedStoresPanel role={api.getUserRole() || 'MANAGER'} />
 
       {/* Multiple Saved Connections List */}
       <div className="space-y-3">

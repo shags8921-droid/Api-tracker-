@@ -91,7 +91,7 @@ export const ManagerHubScreen: React.FC<Props> = ({
     e.preventDefault();
     if (!fulfillOrder) return;
     try {
-      await api.post(`/api/v1/orders/${fulfillOrder.id}/fulfill`, { trackingNumber });
+      await api.post(`/api/v1/orders/${fulfillOrder.id}/fulfill`, { trackingNumber, confirm: true });
       setFulfillOrder(null);
       setTrackingNumber('');
       fetchManagerData();
@@ -123,7 +123,9 @@ export const ManagerHubScreen: React.FC<Props> = ({
 
   const handleStockUpdate = async (itemId: string, newStock: number) => {
     try {
-      await api.patch(`/api/v1/catalog/items/${itemId}/stock`, { stock: newStock });
+      const target: any = catalog.find((c: any) => c.id === itemId);
+      if (target?.websiteId && !window.confirm(`Change stock of "${target.name}" to ${newStock} on the connected website?`)) return;
+      await api.patch(`/api/v1/catalog/items/${itemId}/stock`, { stock: newStock, confirm: true });
       fetchManagerData();
     } catch (err: any) {
       setApiError(err.message);
@@ -170,14 +172,14 @@ export const ManagerHubScreen: React.FC<Props> = ({
             Operational Manager Hub — Orders & Inventory Feed
           </h2>
           <p className="text-xs text-[var(--text-secondary)] mt-1">
-            Real REST operations connected to <code className="font-mono text-cyan-400">/api/v1/orders/*</code> and <code className="font-mono text-cyan-400">/api/v1/catalog/*</code>.
+            SitePulse workspace data. Changes here are stored in SitePulse only and are <strong>not</strong> sent to a connected website until a platform connector is enabled for it.
           </p>
         </div>
 
         <div className="flex items-center gap-2">
           <button onClick={fetchManagerData} className="btn-secondary px-3 py-1.5 text-xs">
             <RefreshCw size={13} className={isLoading ? 'animate-spin' : ''} />
-            Sync Orders Feed
+            Refresh
           </button>
           <span className="px-3 py-1 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 text-xs font-mono font-bold">
             Role Scope: MANAGER OPS
