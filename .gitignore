@@ -9,7 +9,11 @@
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
 .DS_Store
+build/
 /build
+*/build/
+.build-outputs/
+/.build-outputs
 /captures
 .externalNativeBuild
 .cxx
@@ -20,3 +24,7 @@ debug.keystore
 # Runtime data (contains user records and password hashes) - never commit
 web/data/
 web/server/data/
+
+# Ensure APK_DOWNLOAD is never ignored
+!APK_DOWNLOAD/
+!APK_DOWNLOAD/**
