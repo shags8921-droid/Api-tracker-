@@ -12,6 +12,10 @@
     "test": "node --test server/test/server.test.js"
   },
   "dependencies": {
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/core": "^8.6.0",
+    "@capacitor/network": "^8.0.1",
+    "@capacitor/preferences": "^8.0.1",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "lucide-react": "^0.469.0",
