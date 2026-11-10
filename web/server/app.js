@@ -19,6 +19,7 @@ import { ConnectorError, normalizeProduct, normalizeOrder, mapOrderStatus } from
 import { createGeminiClient } from './lib/ai.js';
 import { deliverWithRetry, safePost } from './lib/webhooks.js';
 import { decryptSecret } from './lib/security.js';
+import { PERMISSIONS, PERMISSION_IDS, WORKSPACE, LEGACY_MANAGER_GRANTS, parsePermissionList } from './lib/permissions.js';
 import {
   hashPassword, verifyPassword, hashPasswordAsync, verifyPasswordAsync, DUMMY_HASH, validatePasswordStrength, signToken, verifyToken,
   normaliseEmail, isValidEmail, publicUser, createLoginThrottle
@@ -206,7 +207,9 @@ export function createApp(opts) {
     mustChangePassword,
     createdAt: now(),
     lastLogin: 'Never',
-    permissions: role === 'OWNER' ? ['owner:read', 'owner:admin', 'manager:ops', 'manager:write'] : ['manager:ops', 'manager:write']
+    permissions: role === 'OWNER' ? ['owner:read', 'owner:admin', 'manager:ops', 'manager:write'] : ['manager:ops', 'manager:write'],
+    // Granular access (managers): starts EMPTY (fail closed). The owner grants permissions and assigns websites explicitly.
+    grants: []
   });
 
   const issueToken = (user) =>
@@ -320,6 +323,73 @@ export function createApp(opts) {
   const api = '/api/v1';
   const owner = requireRole('OWNER');
 
+  // ================================================================== access control (server-side, fail closed)
+  // Identity, role and organisation come from the verified token + database, never from the request.
+  // Owners: every permission and every website of their own organisation.
+  // Managers: only permissions the owner granted (user.grants) on only the websites assigned to them (websiteAssignments).
+  const userRecord = (req) => db.users.find((u) => u.id === req.auth.userId && u.orgId === req.auth.orgId);
+  const isOwnerReq = (req) => req.auth.role === 'OWNER';
+  const grantsOf = (req) => {
+    const u = userRecord(req);
+    return u && Array.isArray(u.grants) ? u.grants.filter((g) => PERMISSION_IDS.has(g)) : []; // missing/invalid data => no permissions
+  };
+  const hasPerm = (req, perm) => isOwnerReq(req) || (req.auth.role === 'MANAGER' && grantsOf(req).includes(perm));
+  function accessibleScopes(req) {
+    const out = new Set();
+    const siteIds = new Set(db.websites.filter((w) => w.orgId === req.auth.orgId).map((w) => w.id));
+    if (isOwnerReq(req)) { out.add(WORKSPACE); for (const id of siteIds) out.add(id); return out; }
+    if (req.auth.role !== 'MANAGER') return out;
+    for (const a of db.websiteAssignments) {
+      if (a.orgId === req.auth.orgId && a.userId === req.auth.userId && (a.websiteId === WORKSPACE || siteIds.has(a.websiteId))) out.add(a.websiteId);
+    }
+    return out;
+  }
+  const scopeOf = (rec) => rec.websiteId || WORKSPACE; // records without a website belong to the organisation workspace
+  const deniedAt = new Map();
+  function deny(req, res, code, perm, detail) {
+    logger.warn?.(JSON.stringify({ event: 'access_denied', requestId: req.id, userId: req.auth?.userId, orgId: req.auth?.orgId, code, perm: perm || null }));
+    const key = `${req.auth?.userId}:${code}:${perm || ''}`;
+    if (now() - (deniedAt.get(key) || 0) > 60_000) { // persisted at most once a minute per user/reason (no write amplification)
+      deniedAt.set(key, now());
+      audit(req, 'USER_APPROVAL', 'Access denied', `${code}${perm ? ` (${perm})` : ''}: ${detail || req.method + ' ' + String(req.originalUrl || req.url).split('?')[0]}`, 'WARNING');
+      try { commit(); } catch { /* the 403 is still returned */ }
+    }
+    return res.status(403).json({
+      error: 'Forbidden', code, requiredPermission: perm || null,
+      message: code === 'WEBSITE_NOT_ASSIGNED' ? 'This website is not assigned to you.' : `Your account does not have the "${perm}" permission. Ask an owner to grant it.`
+    });
+  }
+  const needPerm = (perm) => (req, res, next) => (hasPerm(req, perm) ? next() : deny(req, res, 'PERMISSION_DENIED', perm));
+  const needAnyPerm = (...perms) => (req, res, next) => (perms.some((p) => hasPerm(req, p)) ? next() : deny(req, res, 'PERMISSION_DENIED', perms.join('|')));
+  /** Resolve a website from :id: 404 if it is not in the caller's organisation, 403 if no permission or not assigned. */
+  function siteAccess(req, res, perm) {
+    const site = db.websites.find((w) => w.id === req.params.id && w.orgId === req.auth.orgId);
+    if (!site) { res.status(404).json({ error: 'Website not found' }); return null; }
+    if (!hasPerm(req, perm)) { deny(req, res, 'PERMISSION_DENIED', perm); return null; }
+    if (!accessibleScopes(req).has(site.id)) { deny(req, res, 'WEBSITE_NOT_ASSIGNED', perm, site.id); return null; }
+    return site;
+  }
+  /** A record (order/product) of the caller's organisation, only if its website is accessible. Foreign ids behave as "not found". */
+  function recordAccess(req, res, collection, perm) {
+    const rec = db[collection].find((r) => r.id === req.params.id && r.orgId === req.auth.orgId);
+    if (!rec) { res.status(404).json({ error: collection === 'orders' ? 'Order not found' : 'Catalog item not found' }); return null; }
+    if (!accessibleScopes(req).has(scopeOf(rec))) { deny(req, res, 'WEBSITE_NOT_ASSIGNED', perm, `${collection} ${rec.id}`); return null; }
+    return rec;
+  }
+  /** ?websiteId= filter: must be a website the caller can access. */
+  function scopeFilter(req, res, perm) {
+    const wanted = req.query?.websiteId ? String(req.query.websiteId) : null;
+    if (wanted && !accessibleScopes(req).has(wanted)) { deny(req, res, 'WEBSITE_NOT_ASSIGNED', perm, wanted); return false; }
+    return true;
+  }
+  const activeSiteIdFor = (req, sites) => {
+    const u = userRecord(req);
+    if (u?.activeWebsiteId && sites.some((s) => s.id === u.activeWebsiteId)) return u.activeWebsiteId;
+    if (isOwnerReq(req)) return sites.find((s) => s.isActive)?.id ?? sites[0]?.id ?? null; // legacy org-wide flag, owners only
+    return sites[0]?.id ?? null;
+  };
+  const presentOrder = (req, o) => (hasPerm(req, 'customers.view') ? o : { ...o, customer: 'Hidden (no customers.view permission)', shippingAddress: null });
+
   // ================================================================== public
   app.get(`${api}/health`, (req, res) => {
     res.json({ status: 'UP', version: VERSION, service: 'SitePulse AI Backend', uptimeSeconds: Math.floor(process.uptime()), timestamp: now() });
@@ -397,7 +467,12 @@ export function createApp(opts) {
 
   app.get(`${api}/auth/me`, (req, res) => {
     const user = db.users.find((u) => u.id === req.auth.userId);
-    res.json({ user: { ...publicUser(user), isPlatformAdmin: req.auth.isPlatformAdmin }, organisation: publicOrg(orgById(req.auth.orgId)) });
+    const scopes = [...accessibleScopes(req)];
+    res.json({
+      user: { ...publicUser(user), isPlatformAdmin: req.auth.isPlatformAdmin },
+      organisation: publicOrg(orgById(req.auth.orgId)),
+      access: { fullAccess: isOwnerReq(req), permissions: isOwnerReq(req) ? PERMISSIONS.map((p) => p.id) : grantsOf(req), websiteIds: scopes }
+    });
   });
 
   app.post(`${api}/auth/logout`, wrap((req, res) => {
@@ -649,7 +724,7 @@ export function createApp(opts) {
   app.get(`${api}/diagnostics`, (req, res) => res.json([...(telemetry.get(req.auth.orgId) || [])].slice(-100).reverse()));
 
   app.get(`${api}/audit`, (req, res) => {
-    res.json(db.auditLogs.filter((l) => l.orgId === req.auth.orgId).slice(-100).reverse());
+    res.json(db.auditLogs.filter((l) => l.orgId === req.auth.orgId && (isOwnerReq(req) || l.userId === req.auth.userId)).slice(-100).reverse());
   });
 
   // ------------------------------------------------------------------ websites
@@ -672,7 +747,12 @@ export function createApp(opts) {
   const remoteFailure = (res, e) => res.status(e instanceof ConnectorError ? e.status : 502).json({ error: 'Remote update failed', code: e.code || 'REMOTE_ERROR', message: redactSecrets(e.message), applied: false });
   const syncing = new Set();
 
-  app.get(`${api}/websites`, (req, res) => res.json(sitesOf(req).map(publicSite)));
+  app.get(`${api}/websites`, needPerm('website.view'), (req, res) => {
+    const scopes = accessibleScopes(req);
+    const sites = sitesOf(req).filter((w) => scopes.has(w.id));
+    const active = activeSiteIdFor(req, sites);
+    res.json(sites.map((w) => ({ ...publicSite(w), isActive: w.id === active })));
+  });
 
   app.post(`${api}/websites`, owner, wrap((req, res) => {
     const b = bodyOf(req);
@@ -696,9 +776,10 @@ export function createApp(opts) {
   }));
 
   app.post(`${api}/websites/:id/switch`, wrap((req, res) => {
-    const target = sitesOf(req).find((w) => w.id === req.params.id);
-    if (!target) return res.status(404).json({ error: 'Website not found' });
-    for (const w of sitesOf(req)) w.isActive = w.id === target.id;
+    const target = siteAccess(req, res, 'website.view');
+    if (!target) return;
+    userRecord(req).activeWebsiteId = target.id; // per user: one person switching never changes another person's view
+    if (isOwnerReq(req)) for (const w of sitesOf(req)) w.isActive = w.id === target.id; // legacy flag kept for owners
     commit();
     res.json({ success: true, activeSiteId: target.id });
   }));
@@ -724,11 +805,18 @@ export function createApp(opts) {
     // Re-check limits/duplicates after the await (concurrent invites could otherwise exceed the plan or duplicate an email).
     if (db.users.some((u) => u.email === email)) return res.status(409).json({ error: 'A user with this email already exists' });
     if (usersOf(req).length >= max) return res.status(403).json({ error: 'Plan limit reached', message: `Your plan allows ${max} team member(s). Upgrade to add more.` });
+    let initialGrants = [];
+    let initialSites = [];
+    if (role === 'MANAGER') {
+      if (b.permissions !== undefined) { initialGrants = parsePermissionList(b.permissions); if (!initialGrants) return res.status(400).json({ error: 'permissions must be a list of known permission ids', allowed: PERMISSIONS.map((p) => p.id) }); }
+      if (b.websiteIds !== undefined) { initialSites = parseSiteIds(req.auth.orgId, b.websiteIds); if (!initialSites) return res.status(400).json({ error: 'websiteIds must be websites of your organisation (or "workspace")' }); }
+    }
     const user = newUser({
       orgId: org.id, name: str(b.name, 80) || email.split('@')[0], email, role, passwordHash, mustChangePassword: true
     });
+    if (role === 'MANAGER') { user.grants = initialGrants; for (const wid of initialSites) addAssignment(req, user, wid); }
     db.users.push(user);
-    audit(req, 'USER_APPROVAL', 'Team member created', `${email} added as ${role}.`);
+    audit(req, 'USER_APPROVAL', 'Team member created', `${email} added as ${role}${role === 'MANAGER' ? ` with ${user.grants.length} permission(s) on ${db.websiteAssignments.filter((a) => a.userId === user.id).length} website(s)` : ''}.`);
     queueNotification(org.id, { type: 'USER_INVITED', title: 'Team member added', message: `${email} was added as ${role}.`, recipientEmail: email });
     commit();
     // No email service is configured: the owner must pass the one-time password to the new member securely.
@@ -743,10 +831,113 @@ export function createApp(opts) {
       return res.status(400).json({ error: 'Cannot revoke the sole executive owner of the organisation' });
     }
     db.users.splice(db.users.indexOf(target), 1);
+    db.websiteAssignments = db.websiteAssignments.filter((a) => a.userId !== target.id);
     audit(req, 'USER_APPROVAL', 'Team member revoked', `${target.email} removed.`);
     commit();
     dispatchEvent(req.auth.orgId, 'user.revoked', { userId: target.id });
     res.json({ success: true, removedUser: publicUser(target) });
+  }));
+
+  // ------------------------------------------------------------------ owner hub: manager access (assignments + permissions)
+  /** Validates a list of website ids against the caller's organisation (plus the virtual "workspace"). Returns null if anything is foreign/unknown. */
+  function parseSiteIds(orgId, input) {
+    if (!Array.isArray(input) || input.length > 500) return null;
+    const known = new Set([WORKSPACE, ...db.websites.filter((w) => w.orgId === orgId).map((w) => w.id)]);
+    if (!input.every((id) => typeof id === 'string' && known.has(id))) return null;
+    return [...new Set(input)];
+  }
+  function addAssignment(req, user, websiteId) {
+    if (db.websiteAssignments.some((a) => a.orgId === user.orgId && a.userId === user.id && a.websiteId === websiteId)) return false;
+    db.websiteAssignments.push({ id: randomId('asg'), orgId: user.orgId, userId: user.id, websiteId, assignedBy: req.auth.userId, assignedAt: now() });
+    return true;
+  }
+  const siteLabel = (orgId, id) => (id === WORKSPACE ? { id, name: 'SitePulse workspace (local data)', url: null } : (() => { const w = db.websites.find((x) => x.id === id && x.orgId === orgId); return w ? { id, name: w.name, url: w.url } : { id, name: '(removed website)', url: null }; })());
+  const accessSummary = (u) => ({
+    userId: u.id, name: u.name, email: u.email, role: u.role, status: u.status,
+    fullAccess: u.role === 'OWNER',
+    permissions: u.role === 'OWNER' ? PERMISSIONS.map((p) => p.id) : (Array.isArray(u.grants) ? u.grants.filter((g) => PERMISSION_IDS.has(g)) : []),
+    websites: db.websiteAssignments.filter((a) => a.orgId === u.orgId && a.userId === u.id).map((a) => ({ ...siteLabel(u.orgId, a.websiteId), assignedAt: a.assignedAt, assignedBy: a.assignedBy })),
+    legacyAccessMigrated: !!u.legacyAccessMigrated
+  });
+  /** A manager of the CALLER'S organisation, or null (foreign ids and owners are not editable here). */
+  const managerOf = (req) => db.users.find((u) => u.id === req.params.id && u.orgId === req.auth.orgId && u.role === 'MANAGER') || null;
+  const accessAudit = (req, title, details) => audit(req, 'USER_APPROVAL', title, details);
+
+  app.get(`${api}/admin/permissions`, owner, (req, res) => res.json({
+    permissions: PERMISSIONS,
+    workspace: { id: WORKSPACE, name: 'SitePulse workspace (local data)', note: 'Organisation records that belong to no connected website (e.g. manually created products).' },
+    ownerOnly: ['Connect / disconnect websites and credentials', 'Users and access management', 'Webhooks', 'Backups and rollback', 'Billing and data export'],
+    note: 'Permissions apply to every website assigned to the manager.'
+  }));
+
+  app.get(`${api}/admin/managers`, owner, (req, res) => res.json(usersOf(req).filter((u) => u.role === 'MANAGER').map(accessSummary)));
+
+  app.get(`${api}/admin/users/:id/access`, owner, (req, res) => {
+    const u = usersOf(req).find((x) => x.id === req.params.id);
+    if (!u) return res.status(404).json({ error: 'User not found' });
+    res.json(accessSummary(u));
+  });
+
+  app.put(`${api}/admin/users/:id/permissions`, owner, wrap((req, res) => {
+    const target = managerOf(req);
+    if (!target) return res.status(404).json({ error: 'Manager not found' });
+    const list = parsePermissionList(bodyOf(req).permissions);
+    if (!list) return res.status(400).json({ error: 'permissions must be a list of known permission ids', allowed: PERMISSIONS.map((p) => p.id) });
+    const before = Array.isArray(target.grants) ? target.grants : [];
+    target.grants = list;
+    const added = list.filter((p) => !before.includes(p)), removed = before.filter((p) => !list.includes(p));
+    accessAudit(req, 'Manager permissions changed', `${target.email}: granted [${added.join(', ')}], revoked [${removed.join(', ')}].`);
+    commit();
+    res.json(accessSummary(target));
+  }));
+
+  app.put(`${api}/admin/users/:id/websites`, owner, wrap((req, res) => {
+    const target = managerOf(req);
+    if (!target) return res.status(404).json({ error: 'Manager not found' });
+    const ids = parseSiteIds(req.auth.orgId, bodyOf(req).websiteIds);
+    if (!ids) return res.status(400).json({ error: 'websiteIds must be websites of your organisation (or "workspace")' });
+    const before = db.websiteAssignments.filter((a) => a.userId === target.id).map((a) => a.websiteId);
+    db.websiteAssignments = db.websiteAssignments.filter((a) => a.userId !== target.id);
+    for (const id of ids) addAssignment(req, target, id);
+    accessAudit(req, 'Manager website assignments replaced', `${target.email}: [${before.join(', ')}] -> [${ids.join(', ')}].`);
+    commit();
+    res.json(accessSummary(target));
+  }));
+
+  app.post(`${api}/admin/users/:id/websites`, owner, wrap((req, res) => {
+    const target = managerOf(req);
+    if (!target) return res.status(404).json({ error: 'Manager not found' });
+    const ids = parseSiteIds(req.auth.orgId, [bodyOf(req).websiteId]);
+    if (!ids) return res.status(400).json({ error: 'websiteId must be a website of your organisation (or "workspace")' });
+    const created = addAssignment(req, target, ids[0]);
+    if (created) accessAudit(req, 'Website assigned to manager', `${target.email} <- ${ids[0]}.`);
+    commit();
+    res.status(created ? 201 : 200).json(accessSummary(target));
+  }));
+
+  app.delete(`${api}/admin/users/:id/websites/:websiteId`, owner, wrap((req, res) => {
+    const target = managerOf(req);
+    if (!target) return res.status(404).json({ error: 'Manager not found' });
+    const before = db.websiteAssignments.length;
+    db.websiteAssignments = db.websiteAssignments.filter((a) => !(a.orgId === req.auth.orgId && a.userId === target.id && a.websiteId === req.params.websiteId));
+    if (db.websiteAssignments.length === before) return res.status(404).json({ error: 'Assignment not found' });
+    if (target.activeWebsiteId === req.params.websiteId) delete target.activeWebsiteId;
+    accessAudit(req, 'Website assignment revoked', `${target.email} -x- ${req.params.websiteId}.`);
+    commit();
+    res.json(accessSummary(target));
+  }));
+
+  // Removes every permission and assignment and signs the manager out everywhere. The account itself is kept (use DELETE to remove it).
+  app.post(`${api}/admin/users/:id/revoke-access`, owner, wrap((req, res) => {
+    const target = managerOf(req);
+    if (!target) return res.status(404).json({ error: 'Manager not found' });
+    target.grants = [];
+    db.websiteAssignments = db.websiteAssignments.filter((a) => a.userId !== target.id);
+    delete target.activeWebsiteId;
+    target.tokenVersion = (target.tokenVersion || 0) + 1;
+    accessAudit(req, 'Manager access revoked', `${target.email}: all permissions and website assignments removed; sessions invalidated.`);
+    commit();
+    res.json(accessSummary(target));
   }));
 
   // ------------------------------------------------------------------ owner hub: webhooks
@@ -784,22 +975,30 @@ export function createApp(opts) {
   const needConfirm = (b) => b.confirm === true;
 
   // ------------------------------------------------------------------ manager hub: orders
-  const ordersOf = (req) => db.orders.filter((o) => o.orgId === req.auth.orgId);
+  // Visible orders/products = same organisation AND an assigned website AND the view permission (otherwise nothing).
+  const ordersOf = (req) => {
+    if (!hasPerm(req, 'orders.view')) return [];
+    const scopes = accessibleScopes(req);
+    return db.orders.filter((o) => o.orgId === req.auth.orgId && scopes.has(scopeOf(o)));
+  };
 
-  app.get(`${api}/orders/feed`, (req, res) => {
-    const { status, search } = req.query;
+  app.get(`${api}/orders/feed`, needPerm('orders.view'), (req, res) => {
+    if (!scopeFilter(req, res, 'orders.view')) return;
+    const { status, search, websiteId } = req.query;
     let result = ordersOf(req);
+    if (websiteId) result = result.filter((o) => scopeOf(o) === String(websiteId));
     if (status && status !== 'ALL') result = result.filter((o) => o.status === status);
     if (search) {
       const s = String(search).toLowerCase();
-      result = result.filter((o) => o.id.toLowerCase().includes(s) || String(o.customer).toLowerCase().includes(s));
+      const byCustomer = hasPerm(req, 'customers.view'); // searching must not reveal hidden customer names
+      result = result.filter((o) => o.id.toLowerCase().includes(s) || (byCustomer && String(o.customer).toLowerCase().includes(s)));
     }
-    res.json(result);
+    res.json(result.map((o) => presentOrder(req, o)));
   });
 
-  app.post(`${api}/orders/:id/fulfill`, idempotent, wrap(async (req, res) => {
-    const order = ordersOf(req).find((o) => o.id === req.params.id);
-    if (!order) return res.status(404).json({ error: 'Order not found' });
+  app.post(`${api}/orders/:id/fulfill`, needPerm('orders.fulfill'), idempotent, wrap(async (req, res) => {
+    const order = recordAccess(req, res, 'orders', 'orders.fulfill');
+    if (!order) return;
     if (!['NEW', 'PROCESSING'].includes(order.status)) return res.status(409).json({ error: `Order is already ${order.status}` });
     const tracking = str(bodyOf(req).trackingNumber, 64);
     if (!tracking || !/^[A-Za-z0-9._-]+$/.test(tracking)) {
@@ -822,13 +1021,19 @@ export function createApp(opts) {
   }));
 
   // ------------------------------------------------------------------ manager hub: catalog
-  const catalogOf = (req) => db.catalog.filter((i) => i.orgId === req.auth.orgId);
+  const catalogOf = (req) => {
+    if (!hasPerm(req, 'products.view') && !hasPerm(req, 'inventory.view')) return [];
+    const scopes = accessibleScopes(req);
+    return db.catalog.filter((i) => i.orgId === req.auth.orgId && scopes.has(scopeOf(i)));
+  };
   const stockStatus = (item) => (item.stock === 0 ? 'OUT_OF_STOCK' : item.stock <= item.minThreshold ? 'LOW_STOCK' : 'IN_STOCK');
   const nonNegInt = (v) => Number.isInteger(v) && v >= 0 && v <= 1_000_000_000;
 
-  app.get(`${api}/catalog/items`, (req, res) => {
-    const { search, category } = req.query;
+  app.get(`${api}/catalog/items`, needAnyPerm('products.view', 'inventory.view'), (req, res) => {
+    if (!scopeFilter(req, res, 'products.view')) return;
+    const { search, category, websiteId } = req.query;
     let result = catalogOf(req);
+    if (websiteId) result = result.filter((i) => scopeOf(i) === String(websiteId));
     if (category && category !== 'ALL') result = result.filter((i) => i.category === category);
     if (search) {
       const s = String(search).toLowerCase();
@@ -837,7 +1042,8 @@ export function createApp(opts) {
     res.json(result);
   });
 
-  app.post(`${api}/catalog/items`, idempotent, wrap((req, res) => {
+  app.post(`${api}/catalog/items`, needPerm('products.create'), idempotent, wrap((req, res) => {
+    if (!accessibleScopes(req).has(WORKSPACE)) return deny(req, res, 'WEBSITE_NOT_ASSIGNED', 'products.create', WORKSPACE); // creates workspace (local) products
     const b = bodyOf(req);
     const name = str(b.name, 120);
     const sku = str(b.sku, 64);
@@ -847,7 +1053,7 @@ export function createApp(opts) {
     const minThreshold = b.minThreshold === undefined || b.minThreshold === '' ? 5 : typeof b.minThreshold === 'string' ? Number(b.minThreshold) : b.minThreshold;
     if (typeof price !== 'number' || !Number.isFinite(price) || price < 0 || price > 1e9) return res.status(400).json({ error: 'price must be a non-negative number' });
     if (!nonNegInt(stock) || !nonNegInt(minThreshold)) return res.status(400).json({ error: 'stock and minThreshold must be non-negative integers' });
-    if (catalogOf(req).some((i) => i.sku.toLowerCase() === sku.toLowerCase())) return res.status(409).json({ error: 'SKU already exists' });
+    if (db.catalog.some((i) => i.orgId === req.auth.orgId && !i.websiteId && i.sku.toLowerCase() === sku.toLowerCase())) return res.status(409).json({ error: 'SKU already exists' });
     const item = {
       id: `SKU-${crypto.randomBytes(4).toString('hex').toUpperCase()}`, orgId: req.auth.orgId, name,
       category: str(b.category, 60) || 'General', price: round(price), stock, minThreshold, sku
@@ -859,9 +1065,9 @@ export function createApp(opts) {
     res.status(201).json(item);
   }));
 
-  app.patch(`${api}/catalog/items/:id/stock`, wrap(async (req, res) => {
-    const item = catalogOf(req).find((i) => i.id === req.params.id);
-    if (!item) return res.status(404).json({ error: 'Catalog item not found' });
+  app.patch(`${api}/catalog/items/:id/stock`, needPerm('inventory.update'), wrap(async (req, res) => {
+    const item = recordAccess(req, res, 'catalog', 'inventory.update');
+    if (!item) return;
     const b = bodyOf(req);
     const raw = b.stock;
     const stock = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : raw;
@@ -906,9 +1112,9 @@ export function createApp(opts) {
     return typeof price === 'number' && Number.isFinite(price) && price >= 0 && price <= 1e9 ? price : null;
   };
 
-  app.patch(`${api}/catalog/items/:id/price`, owner, wrap(async (req, res) => {
-    const item = catalogOf(req).find((i) => i.id === req.params.id);
-    if (!item) return res.status(404).json({ error: 'Catalog item not found' });
+  app.patch(`${api}/catalog/items/:id/price`, needPerm('products.price.edit'), wrap(async (req, res) => {
+    const item = recordAccess(req, res, 'catalog', 'products.price.edit');
+    if (!item) return;
     const b = bodyOf(req);
     const price = parsePrice(b.price);
     if (price === null) return res.status(400).json({ error: 'price must be a non-negative number' });
@@ -958,8 +1164,8 @@ export function createApp(opts) {
   ];
 
   app.get(`${api}/websites/:id/manifest`, wrap((req, res) => {
-    const site = siteOfOrg(req.auth.orgId, req.params.id);
-    if (!site) return res.status(404).json({ error: 'Website not found' });
+    const site = siteAccess(req, res, 'website.view');
+    if (!site) return;
     const connected = site.connection?.status === 'CONNECTED';
     const mine = (c) => db[c].filter((r) => r.orgId === site.orgId && r.websiteId === site.id);
     const caps = !connected ? [] : site.platform === 'shopify' ? SHOPIFY_CAPABILITIES : site.platform === 'custom' ? CUSTOM_CAPABILITIES : WOO_CAPABILITIES;
@@ -982,14 +1188,16 @@ export function createApp(opts) {
     const q = norm(text);
     const items = catalogOf(req);
     if (/low\s*(in\s*)?stock|running\s*low|out of stock/.test(q)) {
+      if (!hasPerm(req, 'inventory.view') && !hasPerm(req, 'products.view')) return deny(req, res, 'PERMISSION_DENIED', 'inventory.view');
       const low = items.filter((i) => i.stock <= i.minThreshold).map((i) => ({ id: i.id, name: i.name, sku: i.sku, stock: i.stock }));
       return res.json({ kind: 'ANSWER', message: low.length ? `${low.length} product(s) are low or out of stock.` : 'No products are low in stock.', data: low });
     }
     if (/order/.test(q) && /(today|new|recent|pending|show|list)/.test(q)) {
+      if (!hasPerm(req, 'orders.view')) return deny(req, res, 'PERMISSION_DENIED', 'orders.view');
       const start = new Date(now()); start.setUTCHours(0, 0, 0, 0);
       const today = /today/.test(q);
       const list = ordersOf(req).filter((o) => !today || (o.placedAt && new Date(o.placedAt).getTime() >= start.getTime())).slice(0, 25)
-        .map((o) => ({ id: o.id, customer: o.customer, status: o.status, totalAmount: o.totalAmount }));
+        .map((o) => presentOrder(req, o)).map((o) => ({ id: o.id, customer: o.customer, status: o.status, totalAmount: o.totalAmount }));
       return res.json({ kind: 'ANSWER', message: `${list.length} order(s)${today ? ' today (UTC)' : ''}.`, data: list });
     }
     const pm = /(?:change|set|update|make)[^\d]*price[^\d]*?(?:to|=)\s*(?:rs\.?|npr|usd|\$)?\s*([\d][\d,]*(?:\.\d+)?)/.exec(q);
@@ -1251,7 +1459,7 @@ export function createApp(opts) {
   const probeLimiter = createRateLimiter({ name: 'probe', windowMs: 60_000, max: rateLimits.probeMax ?? 6, keyFn: (req) => req.auth?.userId || req.ip || 'unknown', now });
   const PROBE_PATHS = { health: '/api/v1/integration/health', manifest: '/api/v1/integration/manifest', openapi: '/api/v1/openapi.json', sitemap: '/sitemap.xml' };
 
-  app.post(`${api}/discovery/probe`, probeLimiter, wrap(async (req, res) => {
+  app.post(`${api}/discovery/probe`, owner, probeLimiter, wrap(async (req, res) => {
     const b = bodyOf(req);
     const check = validatePublicUrl(b.targetUrl, { allowedHosts: demoHosts });
     if (!check.ok) return res.status(400).json({ error: `Security Policy Violation: ${check.reason}` });
@@ -1292,7 +1500,7 @@ export function createApp(opts) {
   }));
 
   // ------------------------------------------------------------------ platform detection & 12-stage inspection pipeline
-  app.post(`${api}/discovery/detect-platform`, probeLimiter, wrap(async (req, res) => {
+  app.post(`${api}/discovery/detect-platform`, owner, probeLimiter, wrap(async (req, res) => {
     const b = bodyOf(req);
     const targetUrl = str(b.targetUrl || b.url, 500);
     if (!targetUrl || targetUrl.length < 5) return res.status(400).json({ error: 'Valid website URL required' });
@@ -1709,9 +1917,9 @@ export function createApp(opts) {
     } finally { syncing.delete(site.id); }
   }
 
-  app.post(`${api}/websites/:id/sync`, requireRole('OWNER', 'MANAGER'), probeLimiter, wrap(async (req, res) => {
-    const site = siteOfOrg(req.auth.orgId, req.params.id);
-    if (!site) return res.status(404).json({ error: 'Website not found' });
+  app.post(`${api}/websites/:id/sync`, probeLimiter, wrap(async (req, res) => {
+    const site = siteAccess(req, res, 'website.sync');
+    if (!site) return;
     try {
       const r = await syncSite(site);
       audit(req, 'FEATURE_CHANGE', 'Website synchronised', `${r.products} products, ${r.orders} orders read from ${site.url}${r.truncated ? ' (truncated at the page limit)' : ''}.`, 'SUCCESS', { websiteId: site.id });
@@ -1855,7 +2063,9 @@ export function createApp(opts) {
     const mgr = newUser({ orgId: org.id, name: 'Demo Manager', email: 'manager@demo.sitepulse.local', role: 'MANAGER', password });
     org.ownerId = ownerUser.id;
     db.organisations.push(org);
+    mgr.grants = [...LEGACY_MANAGER_GRANTS];
     db.users.push(ownerUser, mgr);
+    for (const wid of [WORKSPACE, 'site_sandbox']) db.websiteAssignments.push({ id: `asg_${mgr.id}_${wid}`, orgId: org.id, userId: mgr.id, websiteId: wid, assignedBy: 'demo-seed', assignedAt: now() });
     db.websites.push({ id: 'site_sandbox', orgId: org.id, url: `https://${DEMO_HOST}`, name: 'Enterprise Sandbox Portal', authType: 'OAUTH2_PKCE', isActive: true, lastConnected: now(), apiHealth: 'UNKNOWN', manifestVersion: null });
     const demoOrders = [
       ['ORD-98241', 'Acme Logistics Corp', 4, 1420.5, 'NEW'], ['ORD-98240', 'Global Tech Dynamics', 12, 5890, 'PROCESSING'],

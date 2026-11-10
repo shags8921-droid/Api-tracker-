@@ -69,7 +69,7 @@ test('tenant isolation across websites, orders, catalog, export, backups', async
 test('manager cannot use owner routes', async () => {
   const h = boot();
   const a = await register(h, 'a@ex.com');
-  const inv = await h.call('POST', '/admin/users/invite', { token: a.token, body: { email: 'm@ex.com', role: 'MANAGER' } });
+  const inv = await h.call('POST', '/admin/users/invite', { token: a.token, body: { email: 'm@ex.com', role: 'MANAGER', permissions: ['orders.view'], websiteIds: ['workspace'] } });
   assert.equal(inv.status, 201);
   const login = await h.call('POST', '/auth/login', { body: { email: 'm@ex.com', password: inv.body.temporaryPassword } });
   assert.equal(login.status, 200, JSON.stringify(login.body));

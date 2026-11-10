@@ -8,6 +8,7 @@
  * This is still a single-process file store. For multi-instance or high-volume use, move to a real database
  * (the rest of the server only touches `store.data` and `store.save()`).
  */
+import { LEGACY_MANAGER_GRANTS, WORKSPACE } from './permissions.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -21,10 +22,10 @@ export class StoreCorruptError extends Error {
   }
 }
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 const COLLECTIONS = [
   'organisations', 'users', 'websites', 'orders', 'catalog', 'webhooks', 'backups',
-  'auditLogs', 'transactions', 'supportTickets', 'notifications', 'emailOutbox', 'uploads', 'webhookDeliveries', 'inboundEvents'
+  'auditLogs', 'transactions', 'supportTickets', 'notifications', 'emailOutbox', 'uploads', 'webhookDeliveries', 'inboundEvents', 'websiteAssignments'
 ];
 
 export function createStore({ dataDir, now = () => Date.now() }) {
@@ -50,6 +51,19 @@ export function createStore({ dataDir, now = () => Date.now() }) {
     if (defaultOrg) {
       for (const c of ['users', 'websites', 'orders', 'catalog', 'webhooks', 'auditLogs', 'transactions', 'supportTickets', 'notifications', 'emailOutbox', 'uploads', 'webhookDeliveries']) {
         for (const rec of db[c]) if (!rec.orgId) rec.orgId = defaultOrg;
+      }
+    }
+    // v7 migration (idempotent): managers that pre-date granular permissions keep EXACTLY the access they had
+    // (every website of their organisation + the workspace + the old manager capabilities). Managers created from now on
+    // start with nothing and are never touched again, because they already carry a `grants` array.
+    for (const u of db.users) {
+      if (u.role !== 'MANAGER' || Array.isArray(u.grants)) continue;
+      u.grants = [...LEGACY_MANAGER_GRANTS];
+      u.legacyAccessMigrated = true;
+      const scopes = [WORKSPACE, ...db.websites.filter((w) => w.orgId === u.orgId).map((w) => w.id)];
+      for (const websiteId of scopes) {
+        if (db.websiteAssignments.some((a) => a.userId === u.id && a.websiteId === websiteId)) continue;
+        db.websiteAssignments.push({ id: `asg_${u.id}_${websiteId}`.slice(0, 120), orgId: u.orgId, userId: u.id, websiteId, assignedBy: 'migration:v7', assignedAt: Date.now() });
       }
     }
     delete db.diagnosticLogs; // replaced by in-memory request telemetry

@@ -264,7 +264,7 @@ test('AI commands: answers read-only questions; price change is only a proposal 
   assert.equal((await h.call('POST', `/ai/command/${p.body.proposalId}/confirm`, { token: a.token })).status, 404, 'single use');
   assert.equal((await cmd('Update this product description to nice')).body.kind, 'UNSUPPORTED');
   assert.equal((await cmd('Change Nonexistent price to 5')).body.kind, 'CLARIFY');
-  const inv = await h.call('POST', '/admin/users/invite', { token: a.token, body: { email: 'm@ex.com', role: 'MANAGER' } });
+  const inv = await h.call('POST', '/admin/users/invite', { token: a.token, body: { email: 'm@ex.com', role: 'MANAGER', permissions: ['orders.view', 'customers.view'], websiteIds: [site.id] } });
   const mgr = (await h.call('POST', '/auth/login', { body: { email: 'm@ex.com', password: inv.body.temporaryPassword } })).body;
   assert.equal((await cmd('Change Shirt price to 5', mgr.token)).status, 403);
   assert.equal((await cmd('show me today\'s orders', mgr.token)).body.kind, 'ANSWER');

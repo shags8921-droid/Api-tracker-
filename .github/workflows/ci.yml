@@ -14,4 +14,4 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
-      - run: node --test server/test/realexpress.test.js
+      - run: node --test server/test/realexpress.test.js server/test/permissions.realexpress.test.js

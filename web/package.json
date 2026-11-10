@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "server": "node --loader ts-node/esm server/index.ts",
     "start": "node server/index.js",
-    "test": "node --test server/test/server.test.js"
+    "test": "node --test server/test/server.test.js server/test/connectors.test.js server/test/permissions.test.js"
   },
   "dependencies": {
     "@capacitor/app": "^8.1.2",
