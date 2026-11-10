@@ -1,0 +1,79 @@
+[
+ {
+  "id": "REAL-01",
+  "area": "RealSocket",
+  "feature": "detect() over real TLS parses the WP index",
+  "expected": "detected",
+  "severity": "P1",
+  "actual": "{\"detected\":true,\"wordpress\":true,\"siteName\":\"Local fake\",\"namespaces\":[\"wc/v3\"]}",
+  "pass": true,
+  "status": "PASS",
+  "evidence": ""
+ },
+ {
+  "id": "REAL-02",
+  "area": "RealSocket",
+  "feature": "verify() with good key OK; bad key -> AUTH_REJECTED",
+  "expected": "ok / AUTH_REJECTED",
+  "severity": "P1",
+  "actual": "good=true bad=AUTH_REJECTED",
+  "pass": true,
+  "status": "PASS",
+  "evidence": ""
+ },
+ {
+  "id": "REAL-03",
+  "area": "RealSocket",
+  "feature": "Pagination follows the real X-WP-TotalPages header (250 products / 3 pages)",
+  "expected": "250 products",
+  "severity": "P1",
+  "actual": "250 products truncated=false",
+  "pass": true,
+  "status": "PASS",
+  "evidence": ""
+ },
+ {
+  "id": "REAL-04",
+  "area": "RealSocket",
+  "feature": "Write sends correct JSON body and method",
+  "expected": "PUT {regular_price:\"999\"}",
+  "severity": "P1",
+  "actual": "{\"regular_price\":\"999\"}",
+  "pass": true,
+  "status": "PASS",
+  "evidence": ""
+ },
+ {
+  "id": "REAL-05",
+  "area": "RealSocket",
+  "feature": "HTTP 429 maps to RATE_LIMITED (not success)",
+  "expected": "RATE_LIMITED",
+  "severity": "P2",
+  "actual": "RATE_LIMITED",
+  "pass": true,
+  "status": "PASS",
+  "evidence": ""
+ },
+ {
+  "id": "REAL-06",
+  "area": "RealSocket",
+  "feature": "Store returns an HTML maintenance page with 200 -> not treated as data",
+  "expected": "BAD_RESPONSE",
+  "severity": "P1",
+  "actual": "BAD_RESPONSE",
+  "pass": true,
+  "status": "PASS",
+  "evidence": ""
+ },
+ {
+  "id": "REAL-07",
+  "area": "RealSocket",
+  "feature": "Hanging store -> clean timeout error, no hang",
+  "expected": "error within ~1.5 s",
+  "severity": "P2",
+  "actual": "REMOTE_ERROR after 1502 ms",
+  "pass": true,
+  "status": "PASS",
+  "evidence": "Timeout value here comes from this test wrapper; the production 8 s default in safeRequest was not exercised (see SEC-09)."
+ }
+]
